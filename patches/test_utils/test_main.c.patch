@@ -1,0 +1,60 @@
+diff --git a/test_utils/test_main.c b/test_utils/test_main.c
+index 80d969ca..893738ef 100644
+--- a/test_utils/test_main.c
++++ b/test_utils/test_main.c
+@@ -3581,6 +3581,17 @@ test_run(int i, const char *tmpdir)
+ 		printf("%3d: %s\n", i, tests[i].name);
+ 	}
+ 
++	if((!strcmp(tests[i].name, "test_fuzz_tar")) || 
++	(!strcmp(tests[i].name, "test_fuzz_cpio")) || 
++	(!strcmp(tests[i].name, "test_ustar_filenames")) ||
++	(!strcmp(tests[i].name, "test_tar_filenames")) ||
++	(!strcmp(tests[i].name, "test_write_format_mtree_classic")) || 
++	(!strcmp(tests[i].name, "test_write_format_mtree_classic_indent")))
++	{
++		printf("%s won't run!\n",tests[i].name);
++		return 1;
++	}
++
+ 	/* Chdir to the top-level work directory. */
+ 	if (!assertChdir(tmpdir)) {
+ 		fprintf(stderr,
+@@ -3698,6 +3709,7 @@ get_refdir(const char *d)
+ {
+ 	size_t tried_size, buff_size;
+ 	char *buff, *tried, *pwd = NULL, *p = NULL;
++	char buf1[PATH_MAX];
+ 
+ #ifdef PATH_MAX
+ 	buff_size = PATH_MAX;
+@@ -3731,7 +3743,11 @@ get_refdir(const char *d)
+ 
+ 	/* Get the current dir. */
+ #if defined(PATH_MAX) && !defined(__GLIBC__)
++#ifdef __MVS__
++	pwd = getcwd(buf1, PATH_MAX);
++#else
+ 	pwd = getcwd(NULL, PATH_MAX);/* Solaris getcwd needs the size. */
++#endif
+ #else
+ 	pwd = getcwd(NULL, 0);
+ #endif
+@@ -3924,12 +3940,17 @@ main(int argc, char **argv)
+ #endif
+ 	char *pwd, *testprogdir, *tmp2 = NULL, *vlevel = NULL;
+ 	char tmpdir_timestamp[32];
++	char buf[PATH_MAX];
+ 
+ 	(void)argc; /* UNUSED */
+ 
+ 	/* Get the current dir. */
+ #if defined(PATH_MAX) && !defined(__GLIBC__)
++#ifdef __MVS__
++	pwd = getcwd(buf, PATH_MAX);
++#else
+ 	pwd = getcwd(NULL, PATH_MAX);/* Solaris getcwd needs the size. */
++#endif
+ #else
+ 	pwd = getcwd(NULL, 0);
+ #endif

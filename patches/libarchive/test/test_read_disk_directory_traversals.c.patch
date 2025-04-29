@@ -1,0 +1,37 @@
+diff --git a/libarchive/test/test_read_disk_directory_traversals.c b/libarchive/test/test_read_disk_directory_traversals.c
+index 009c9a8d..458c1440 100644
+--- a/libarchive/test/test_read_disk_directory_traversals.c
++++ b/libarchive/test/test_read_disk_directory_traversals.c
+@@ -91,6 +91,8 @@ test_basic(void)
+ #if defined(_WIN32) && !defined(__CYGWIN__)
+ 	wchar_t *wcwd, *wp, *fullpath;
+ #endif
++	char buf[PATH_MAX];
++
+ 
+ 	assertMakeDir("dir1", 0755);
+ 	assertMakeFile("dir1/file1", 0644, "0123456789");
+@@ -528,7 +530,11 @@ test_basic(void)
+ 
+ 	/* Save current working directory. */
+ #if defined(PATH_MAX) && !defined(__GLIBC__)
++#ifdef __MVS__
++	initial_cwd = getcwd(buf, PATH_MAX);
++#else
+ 	initial_cwd = getcwd(NULL, PATH_MAX);/* Solaris getcwd needs the size. */
++#endif
+ #else
+ 	initial_cwd = getcwd(NULL, 0);
+ #endif
+@@ -560,7 +566,11 @@ test_basic(void)
+ 	    "Current working directory does not return to the initial"
+ 	    "directory");
+ #if defined(PATH_MAX) && !defined(__GLIBC__)
++#ifdef __MVS__
++	cwd = getcwd(buf, PATH_MAX);
++#else
+ 	cwd = getcwd(NULL, PATH_MAX);/* Solaris getcwd needs the size. */
++#endif
+ #else
+ 	cwd = getcwd(NULL, 0);
+ #endif
