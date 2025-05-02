@@ -106,9 +106,9 @@ gen_patches()
 
 LIBARCHIVE_DIR=${LIBARCHIVE_DIR}                          # Path to libarchive repo
 LIBARCHIVE_PORT_DIR=${LIBARCHIVE_PORT_DIR}                # Path to libarchiveport repo
-BASE_COMMIT=dcbf1e0ededa95849f098d154a25876ed5754bcf      # libarchive gets cloned with this latest commit
-PATCHED_COMMIT=7a28dfded2c08621efc77ca746c6007be66e328e   # Run zopen build to apply all the patches in libarchiveport
-CURRENT_COMMIT=be0c514a064ee11e2a6f7eb5a67991ab117b01ee   # Commit with further dev changes
+BASE_COMMIT=761e2f3c1ea651615f21db243290f0ad5af5eb4c      # libarchive gets cloned with this latest commit
+PATCHED_COMMIT=7c4d4c28ec45aad3e0bba077c80cbba92f5b3878   # Run zopen build to apply all the patches in libarchiveport
+CURRENT_COMMIT=a6f98f9483a645f9487ff992d72e63f8bb5ef36c   # Commit with further dev changes
 
 ## main() STARTS HERE ##
 echo "LIBARCHIVE_DIR      ${LIBARCHIVE_DIR}"

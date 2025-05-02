@@ -1,5 +1,5 @@
 diff --git a/test_utils/test_main.c b/test_utils/test_main.c
-index 80d969ca..893738ef 100644
+index 80d969ca..81ed287e 100644
 --- a/test_utils/test_main.c
 +++ b/test_utils/test_main.c
 @@ -3581,6 +3581,17 @@ test_run(int i, const char *tmpdir)
@@ -13,7 +13,7 @@ index 80d969ca..893738ef 100644
 +	(!strcmp(tests[i].name, "test_write_format_mtree_classic")) || 
 +	(!strcmp(tests[i].name, "test_write_format_mtree_classic_indent")))
 +	{
-+		printf("%s won't run!\n",tests[i].name);
++		printf("skipped\n");
 +		return 1;
 +	}
 +
