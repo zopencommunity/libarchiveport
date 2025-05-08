@@ -1,0 +1,36 @@
+# bump: git-version /GIT_VERSION="(.*)"/ https://github.com/git/git.git|*
+GIT_VERSION="2.49.0"
+export ZOPEN_DEV_URL="https://github.com/libarchive/libarchive.git"
+export ZOPEN_DEV_DEPS="zoslib git curl make autoconf tar lz4 cpio openssl zstd automake libtool"
+export ZOPEN_BUILD_LINE="DEV"
+export ZOPEN_RUNTIME_DEPS="bash"
+export ZOPEN_CATEGORIES="compression"
+export ZOPEN_COMP=clang
+export ZOPEN_BOOTSTRAP="./build/autogen.sh"
+export ZOPEN_EXTRA_CFLAGS="${ZOPEN_EXTRA_CFLAGS} -mzos-target=zosv2r5 -D_POSIX_C_SOURCE=200809L -D_XPLATFORM_SOURCE=1"
+export ZOPEN_EXTRA_CPPFLAGS="${ZOPEN_EXTRA_CPPFLAGS}  -mzos-target=zosv2r5"
+export ZOPEN_DEV_BRANCH="v3.7.9"
+export ZOPEN_STABLE_TAG=${ZOPEN_DEV_BRANCH}
+export ZOPEN_SYSTEM_PREREQ="zos25"
+
+zopen_check_results()
+{
+  TEST_LOG="./test-suite.log"
+  PASS=$(grep -c -E 'test_.*ok' ${TEST_LOG})
+  FAIL=$(grep -c -E 'test_.*FAIL' ${TEST_LOG})
+  SKIPPED=$(grep -c -E 'test_.*skipped' ${TEST_LOG})
+  TOTAL_TESTS=$(($PASS + $FAIL))
+
+  # Echo the following information to gauge build health
+  echo "totalTests:${TOTAL_TESTS}"
+  echo "actualFailures:${FAIL}"
+  echo "skippedTests:${SKIPPED}"
+  echo "expectedFailures:0"
+}
+
+zopen_get_version()
+{
+  # Modify to echo the version of your tool/library
+  # Rather than hardcoding the version, obtain the version by running the tool/library
+  echo ${ZOPEN_STABLE_TAG}
+}
