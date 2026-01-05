@@ -1,5 +1,5 @@
 # bump: archive-version /ARCHIVE_VERSION="(.*)"/ https://github.com/libarchive/libarchive.git|*
-ARCHIVE_VERSION="3.7.9"
+ARCHIVE_VERSION="3.8.5"
 export ZOPEN_STABLE_URL="https://github.com/libarchive/libarchive.git"
 export ZOPEN_STABLE_DEPS="zoslib git curl make autoconf tar lz4 cpio openssl zstd automake libtool openssl libpsl"
 export ZOPEN_BUILD_LINE="STABLE"
