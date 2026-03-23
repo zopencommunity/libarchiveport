@@ -1,18 +1,18 @@
 diff --git a/libarchive/archive_entry.h b/libarchive/archive_entry.h
-index eff8a769..bd5a2fba 100644
+index f7f1c52..1fd4c42 100644
 --- a/libarchive/archive_entry.h
 +++ b/libarchive/archive_entry.h
 @@ -38,6 +38,9 @@
   * use predefined compiler and/or platform macros.
   */
  
-+ #ifdef __MVS__
-+ #include <sys/modes.h>
-+ #endif
++#ifdef __MVS__
++#include <sys/modes.h>
++#endif
  #include <sys/types.h>
  #include <stddef.h>  /* for wchar_t */
- #include <stdint.h>
-@@ -182,6 +185,16 @@ struct archive_entry;
+ #include <stdint.h>  /* for C99 int64_t, etc. */
+@@ -212,6 +215,16 @@ struct archive_entry;
   * In libarchive 4.0, we can drop the casts here.
   * They're needed to work around Borland C's broken mode_t.
   */
@@ -29,7 +29,7 @@ index eff8a769..bd5a2fba 100644
  #define AE_IFMT		((__LA_MODE_T)0170000)
  #define AE_IFREG	((__LA_MODE_T)0100000)
  #define AE_IFLNK	((__LA_MODE_T)0120000)
-@@ -190,7 +203,7 @@ struct archive_entry;
+@@ -220,7 +233,7 @@ struct archive_entry;
  #define AE_IFBLK	((__LA_MODE_T)0060000)
  #define AE_IFDIR	((__LA_MODE_T)0040000)
  #define AE_IFIFO	((__LA_MODE_T)0010000)

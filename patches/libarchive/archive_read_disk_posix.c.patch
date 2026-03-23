@@ -1,7 +1,7 @@
-diff --git i/libarchive/archive_read_disk_posix.c w/libarchive/archive_read_disk_posix.c
-index 09965eb..7412971 100644
---- i/libarchive/archive_read_disk_posix.c
-+++ w/libarchive/archive_read_disk_posix.c
+diff --git a/libarchive/archive_read_disk_posix.c b/libarchive/archive_read_disk_posix.c
+index 94fa8fe..7d2a9a4 100644
+--- a/libarchive/archive_read_disk_posix.c
++++ b/libarchive/archive_read_disk_posix.c
 @@ -50,7 +50,7 @@
  #endif
  #ifdef HAVE_LINUX_FS_H
