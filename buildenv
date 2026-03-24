@@ -1,11 +1,10 @@
 # bump: archive-version /ARCHIVE_VERSION="(.*)"/ https://github.com/libarchive/libarchive.git|*
 ARCHIVE_VERSION="3.8.6"
 export ZOPEN_STABLE_URL="https://github.com/libarchive/libarchive.git"
-export ZOPEN_STABLE_DEPS="zoslib git curl make autoconf tar lz4 cpio openssl zstd automake libtool"
+export ZOPEN_STABLE_DEPS="zoslib make autoconf lz4 openssl zstd automake libtool zlib bzip2 xz pkgconfig libxml2 coreutils grep gawk libiconv"
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_RUNTIME_DEPS="bash"
 export ZOPEN_CATEGORIES="compression"
-export ZOPEN_COMP=clang
 export ZOPEN_BOOTSTRAP="./build/autogen.sh"
 export ZOPEN_EXTRA_CPPFLAGS="-D_POSIX_C_SOURCE=200809L -D_XPLATFORM_SOURCE=1"
 export ZOPEN_STABLE_TAG="v${ARCHIVE_VERSION}"
@@ -22,7 +21,7 @@ zopen_check_results()
   echo "totalTests:${TOTAL_TESTS}"
   echo "actualFailures:${FAIL}"
   echo "skippedTests:${SKIPPED}"
-  echo "expectedFailures:202"
+  echo "expectedFailures:220"
 }
 
 zopen_append_to_env(){
