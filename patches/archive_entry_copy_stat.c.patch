@@ -1,0 +1,24 @@
+diff --git a/libarchive/archive_entry_copy_stat.c b/libarchive/archive_entry_copy_stat.c
+index f9c2e84..2e8bf30 100644
+--- a/libarchive/archive_entry_copy_stat.c
++++ b/libarchive/archive_entry_copy_stat.c
+@@ -78,5 +78,19 @@ archive_entry_copy_stat(struct archive_entry *entry, const struct stat *st)
+ 	archive_entry_set_nlink(entry, st->st_nlink);
+ 	archive_entry_set_rdev(entry, st->st_rdev);
+ 	archive_entry_set_size(entry, st->st_size);
++#ifdef __MVS__
++	{
++		mode_t m = st->st_mode & 07777;
++		if (S_ISREG(st->st_mode)) m |= AE_IFREG;
++		else if (S_ISDIR(st->st_mode)) m |= AE_IFDIR;
++		else if (S_ISLNK(st->st_mode)) m |= AE_IFLNK;
++		else if (S_ISBLK(st->st_mode)) m |= AE_IFBLK;
++		else if (S_ISCHR(st->st_mode)) m |= AE_IFCHR;
++		else if (S_ISFIFO(st->st_mode)) m |= AE_IFIFO;
++		else if (S_ISSOCK(st->st_mode)) m |= AE_IFSOCK;
++		archive_entry_set_mode(entry, m);
++	}
++#else
+ 	archive_entry_set_mode(entry, st->st_mode);
++#endif
+ }

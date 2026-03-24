@@ -1,5 +1,5 @@
 diff --git a/libarchive/test/test_sparse_basic.c b/libarchive/test/test_sparse_basic.c
-index 93710cb6..faa20abf 100644
+index 93710cb..faa20ab 100644
 --- a/libarchive/test/test_sparse_basic.c
 +++ b/libarchive/test/test_sparse_basic.c
 @@ -506,6 +506,7 @@ DEFINE_TEST(test_sparse_basic)

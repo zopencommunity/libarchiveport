@@ -1,8 +1,8 @@
 diff --git a/test_utils/test_main.c b/test_utils/test_main.c
-index 80d969ca..81ed287e 100644
+index 1f641bb..d0b927b 100644
 --- a/test_utils/test_main.c
 +++ b/test_utils/test_main.c
-@@ -3581,6 +3581,17 @@ test_run(int i, const char *tmpdir)
+@@ -3600,6 +3600,17 @@ test_run(int i, const char *tmpdir)
  		printf("%3d: %s\n", i, tests[i].name);
  	}
  
@@ -20,7 +20,7 @@ index 80d969ca..81ed287e 100644
  	/* Chdir to the top-level work directory. */
  	if (!assertChdir(tmpdir)) {
  		fprintf(stderr,
-@@ -3698,6 +3709,7 @@ get_refdir(const char *d)
+@@ -3774,6 +3785,7 @@ get_refdir(const char *d)
  {
  	size_t tried_size, buff_size;
  	char *buff, *tried, *pwd = NULL, *p = NULL;
@@ -28,7 +28,7 @@ index 80d969ca..81ed287e 100644
  
  #ifdef PATH_MAX
  	buff_size = PATH_MAX;
-@@ -3731,7 +3743,11 @@ get_refdir(const char *d)
+@@ -3807,7 +3819,11 @@ get_refdir(const char *d)
  
  	/* Get the current dir. */
  #if defined(PATH_MAX) && !defined(__GLIBC__)
@@ -40,13 +40,15 @@ index 80d969ca..81ed287e 100644
  #else
  	pwd = getcwd(NULL, 0);
  #endif
-@@ -3924,12 +3940,17 @@ main(int argc, char **argv)
+@@ -3999,6 +4015,7 @@ main(int argc, char **argv)
+ 	char tmpdir[256];
  #endif
  	char *pwd, *testprogdir, *tmp2 = NULL, *vlevel = NULL;
- 	char tmpdir_timestamp[32];
 +	char buf[PATH_MAX];
- 
- 	(void)argc; /* UNUSED */
+ 	char tmpdir_timestamp[32];
+ #ifdef RUN_TEST_UNPRIV
+ 	struct passwd *pw;
+@@ -4008,7 +4025,11 @@ main(int argc, char **argv)
  
  	/* Get the current dir. */
  #if defined(PATH_MAX) && !defined(__GLIBC__)

@@ -1,0 +1,22 @@
+diff --git a/libarchive/archive_entry.h b/libarchive/archive_entry.h
+index f7f1c52..2ab8c69 100644
+--- a/libarchive/archive_entry.h
++++ b/libarchive/archive_entry.h
+@@ -38,6 +38,9 @@
+  * use predefined compiler and/or platform macros.
+  */
+ 
++#ifdef __MVS__
++#include <sys/modes.h>
++#endif
+ #include <sys/types.h>
+ #include <stddef.h>  /* for wchar_t */
+ #include <stdint.h>  /* for C99 int64_t, etc. */
+@@ -220,7 +223,6 @@ struct archive_entry;
+ #define AE_IFBLK	((__LA_MODE_T)0060000)
+ #define AE_IFDIR	((__LA_MODE_T)0040000)
+ #define AE_IFIFO	((__LA_MODE_T)0010000)
+-
+ /*
+  * Symlink types
+  */

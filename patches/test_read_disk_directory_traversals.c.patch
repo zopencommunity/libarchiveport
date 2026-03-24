@@ -1,5 +1,5 @@
 diff --git a/libarchive/test/test_read_disk_directory_traversals.c b/libarchive/test/test_read_disk_directory_traversals.c
-index 009c9a8d..458c1440 100644
+index 7597f4b..f99f7fb 100644
 --- a/libarchive/test/test_read_disk_directory_traversals.c
 +++ b/libarchive/test/test_read_disk_directory_traversals.c
 @@ -91,6 +91,8 @@ test_basic(void)
