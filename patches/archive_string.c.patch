@@ -1,0 +1,17 @@
+diff --git a/libarchive/archive_string.c b/libarchive/archive_string.c
+index a4955d4..ac66e1f 100644
+--- a/libarchive/archive_string.c
++++ b/libarchive/archive_string.c
+@@ -2114,8 +2114,11 @@ iconv_strncat_in_locale(struct archive_string *as, const void *_p,
+ 	while (remaining >= from_size) {
+ 		size_t result = iconv(cd, &itp, &remaining, &outp, &avail);
+ 
+-		if (result != (size_t)-1)
++		if (result != (size_t)-1) {
++			if (result > 0)
++				return_value = -1;
+ 			break; /* Conversion completed. */
++		}
+ 
+ 		if (errno == EILSEQ || errno == EINVAL) {
+ 			/*

@@ -1,0 +1,27 @@
+diff --git a/libarchive/archive_entry_stat.c b/libarchive/archive_entry_stat.c
+index 345d3d2..d7329aa 100644
+--- a/libarchive/archive_entry_stat.c
++++ b/libarchive/archive_entry_stat.c
+@@ -79,7 +79,22 @@ archive_entry_stat(struct archive_entry *entry)
+ 	st->st_size = (off_t)size;
+ 	if (st->st_size < 0 || (int64_t)st->st_size != size)
+ 		st->st_size = 0;
++#ifdef __MVS__
++	{
++		mode_t m = archive_entry_mode(entry);
++		mode_t type = m & AE_IFMT;
++		st->st_mode = m & ~AE_IFMT;
++		if (type == AE_IFREG) st->st_mode |= S_IFREG;
++		else if (type == AE_IFDIR) st->st_mode |= S_IFDIR;
++		else if (type == AE_IFLNK) st->st_mode |= S_IFLNK;
++		else if (type == AE_IFBLK) st->st_mode |= S_IFBLK;
++		else if (type == AE_IFCHR) st->st_mode |= S_IFCHR;
++		else if (type == AE_IFIFO) st->st_mode |= S_IFIFO;
++		else if (type == AE_IFSOCK) st->st_mode |= S_IFSOCK;
++	}
++#else
+ 	st->st_mode = archive_entry_mode(entry);
++#endif
+ 
+ 	/*
+ 	 * On systems that support high-res timestamps, copy that
