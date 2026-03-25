@@ -8,6 +8,7 @@ export ZOPEN_CATEGORIES="compression"
 export ZOPEN_BOOTSTRAP="./build/autogen.sh"
 export ZOPEN_EXTRA_CPPFLAGS="-D_POSIX_C_SOURCE=200809L -D_XPLATFORM_SOURCE=1"
 export ZOPEN_STABLE_TAG="v${ARCHIVE_VERSION}"
+export ZOPEN_RUNTIME_DEPS="bzip2 lz4 zstd zlib openssl libiconv libxml2"
 
 zopen_check_results()
 {
