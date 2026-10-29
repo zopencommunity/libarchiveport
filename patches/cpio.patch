@@ -1,0 +1,32 @@
+diff --git a/cpio/cpio.c b/cpio/cpio.c
+index 9ba153d..892c5f8 100644
+--- a/cpio/cpio.c
++++ b/cpio/cpio.c
+@@ -1456,9 +1456,13 @@ lookup_uname_helper(struct cpio *cpio, const char **name, id_t id)
+ 	errno = 0;
+ 	pwent = getpwuid((uid_t)id);
+ 	if (pwent == NULL) {
++#ifndef __MVS__
++		/* z/OS: getpwuid() reports a SAF/RACF error even for uids
++		 * that simply do not exist, which is not worth a warning. */
+ 		if (errno && errno != ENOENT)
+ 			lafe_warnc(errno, "getpwuid(%lld) failed",
+ 			    (long long)id);
++#endif
+ 		return 1;
+ 	}
+ 
+@@ -1483,9 +1487,13 @@ lookup_gname_helper(struct cpio *cpio, const char **name, id_t id)
+ 	errno = 0;
+ 	grent = getgrgid((gid_t)id);
+ 	if (grent == NULL) {
++#ifndef __MVS__
++		/* z/OS: getgrgid() reports a SAF/RACF error even for gids
++		 * that simply do not exist, which is not worth a warning. */
+ 		if (errno && errno != ENOENT)
+ 			lafe_warnc(errno, "getgrgid(%lld) failed",
+ 			    (long long)id);
++#endif
+ 		return 1;
+ 	}
+ 

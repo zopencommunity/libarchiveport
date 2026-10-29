@@ -1,0 +1,69 @@
+diff --git a/unzip/bsdunzip.c b/unzip/bsdunzip.c
+index e6426d5..8bfc3f4 100644
+--- a/unzip/bsdunzip.c
++++ b/unzip/bsdunzip.c
+@@ -842,7 +842,7 @@ extract(struct archive *a, struct archive_entry *e)
+ 		return;
+ 	}
+ 
+-	if (S_ISLNK(filetype) &&
++	if (archive_entry_filetype(e) == AE_IFLNK &&
+ 	    ((linktarget = archive_entry_symlink(e)) != NULL) &&
+ 	    pathname_is_insecure(linktarget)) {
+ 		warningx("skipping insecure symlink '%s' to '%s'", pathname, linktarget);
+@@ -852,7 +852,8 @@ extract(struct archive *a, struct archive_entry *e)
+ 	}
+ 
+ 	/* I don't think this can happen in a zipfile.. */
+-	if (!S_ISDIR(filetype) && !S_ISREG(filetype) && !S_ISLNK(filetype)) {
++	if (filetype != AE_IFDIR && filetype != AE_IFREG
++	    && filetype != AE_IFLNK) {
+ 		warningx("skipping non-regular entry '%s'", pathname);
+ 		ac(archive_read_data_skip(a));
+ 		free(pathname);
+@@ -860,7 +861,7 @@ extract(struct archive *a, struct archive_entry *e)
+ 	}
+ 
+ 	/* skip directories in -j case */
+-	if (S_ISDIR(filetype) && j_opt) {
++	if (filetype == AE_IFDIR && j_opt) {
+ 		ac(archive_read_data_skip(a));
+ 		free(pathname);
+ 		return;
+@@ -886,7 +887,7 @@ extract(struct archive *a, struct archive_entry *e)
+ 	/* ensure that parent directory exists */
+ 	make_parent(realpathname);
+ 
+-	if (S_ISDIR(filetype))
++	if (filetype == AE_IFDIR)
+ 		extract_dir(a, e, realpathname);
+ 	else
+ 		extract_file(a, e, &realpathname);
+@@ -909,7 +910,8 @@ extract_stdout(struct archive *a, struct archive_entry *e)
+ 	filetype = archive_entry_filetype(e);
+ 
+ 	/* I don't think this can happen in a zipfile.. */
+-	if (!S_ISDIR(filetype) && !S_ISREG(filetype) && !S_ISLNK(filetype)) {
++	if (filetype != AE_IFDIR && filetype != AE_IFREG
++	    && filetype != AE_IFLNK) {
+ 		warningx("skipping non-regular entry '%s'", pathname);
+ 		ac(archive_read_data_skip(a));
+ 		free(pathname);
+@@ -917,7 +919,7 @@ extract_stdout(struct archive *a, struct archive_entry *e)
+ 	}
+ 
+ 	/* skip directories in -j case */
+-	if (S_ISDIR(filetype)) {
++	if (filetype == AE_IFDIR) {
+ 		ac(archive_read_data_skip(a));
+ 		free(pathname);
+ 		return;
+@@ -989,7 +991,7 @@ test(struct archive *a, struct archive_entry *e)
+ 	int error_count;
+ 
+ 	error_count = 0;
+-	if (S_ISDIR(archive_entry_filetype(e)))
++	if (archive_entry_filetype(e) == AE_IFDIR)
+ 		return 0;
+ 
+ 	info("    testing: %s\t", archive_entry_pathname(e));

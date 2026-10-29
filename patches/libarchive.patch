@@ -1,0 +1,556 @@
+diff --git a/libarchive/archive_entry.c b/libarchive/archive_entry.c
+index 758d766..7d0c172 100644
+--- a/libarchive/archive_entry.c
++++ b/libarchive/archive_entry.c
+@@ -1233,6 +1233,21 @@ void
+ archive_entry_set_mode(struct archive_entry *entry, __LA_MODE_T m)
+ {
+ 	entry->stat_valid = 0;
++#ifdef __MVS__
++	/* z/OS S_IF* constants occupy different bit positions than AE_IF*.
++	 * If the caller passed a native S_IF* value (bits outside AE_IFMT),
++	 * translate the file type to AE_IF* while preserving the permission bits. */
++	if (m & ~(__LA_MODE_T)07777 & ~(__LA_MODE_T)AE_IFMT) {
++		__LA_MODE_T perm = m & 07777;
++		if (S_ISREG(m))        m = AE_IFREG  | perm;
++		else if (S_ISDIR(m))   m = AE_IFDIR  | perm;
++		else if (S_ISLNK(m))   m = AE_IFLNK  | perm;
++		else if (S_ISBLK(m))   m = AE_IFBLK  | perm;
++		else if (S_ISCHR(m))   m = AE_IFCHR  | perm;
++		else if (S_ISFIFO(m))  m = AE_IFIFO  | perm;
++		else if (S_ISSOCK(m))  m = AE_IFSOCK | perm;
++	}
++#endif
+ 	entry->acl.mode = m;
+ 	entry->ae_set |= AE_SET_PERM | AE_SET_FILETYPE;
+ }
+@@ -1309,7 +1324,13 @@ archive_entry_set_perm(struct archive_entry *entry, __LA_MODE_T p)
+ {
+ 	entry->stat_valid = 0;
+ 	entry->acl.mode &= AE_IFMT;
++#ifdef __MVS__
++	/* z/OS stat modes carry the file type in high-order bits that
++	 * fall outside AE_IFMT; keep only the permission bits. */
++	entry->acl.mode |= 07777 & p;
++#else
+ 	entry->acl.mode |= ~AE_IFMT & p;
++#endif
+ 	entry->ae_set |= AE_SET_PERM;
+ }
+ 
+diff --git a/libarchive/archive_entry.h b/libarchive/archive_entry.h
+index 50e10a1..6b21351 100644
+--- a/libarchive/archive_entry.h
++++ b/libarchive/archive_entry.h
+@@ -38,6 +38,9 @@
+  * use predefined compiler and/or platform macros.
+  */
+ 
++#ifdef __MVS__
++#include <sys/modes.h>
++#endif
+ #include <sys/types.h>
+ #include <stddef.h>  /* for wchar_t */
+ #include <stdint.h>  /* for C99 int64_t, etc. */
+@@ -220,7 +223,6 @@ struct archive_entry;
+ #define AE_IFBLK	((__LA_MODE_T)0060000)
+ #define AE_IFDIR	((__LA_MODE_T)0040000)
+ #define AE_IFIFO	((__LA_MODE_T)0010000)
+-
+ /*
+  * Symlink types
+  */
+diff --git a/libarchive/archive_entry_copy_stat.c b/libarchive/archive_entry_copy_stat.c
+index f9c2e84..2e8bf30 100644
+--- a/libarchive/archive_entry_copy_stat.c
++++ b/libarchive/archive_entry_copy_stat.c
+@@ -78,5 +78,19 @@ archive_entry_copy_stat(struct archive_entry *entry, const struct stat *st)
+ 	archive_entry_set_nlink(entry, st->st_nlink);
+ 	archive_entry_set_rdev(entry, st->st_rdev);
+ 	archive_entry_set_size(entry, st->st_size);
++#ifdef __MVS__
++	{
++		mode_t m = st->st_mode & 07777;
++		if (S_ISREG(st->st_mode)) m |= AE_IFREG;
++		else if (S_ISDIR(st->st_mode)) m |= AE_IFDIR;
++		else if (S_ISLNK(st->st_mode)) m |= AE_IFLNK;
++		else if (S_ISBLK(st->st_mode)) m |= AE_IFBLK;
++		else if (S_ISCHR(st->st_mode)) m |= AE_IFCHR;
++		else if (S_ISFIFO(st->st_mode)) m |= AE_IFIFO;
++		else if (S_ISSOCK(st->st_mode)) m |= AE_IFSOCK;
++		archive_entry_set_mode(entry, m);
++	}
++#else
+ 	archive_entry_set_mode(entry, st->st_mode);
++#endif
+ }
+diff --git a/libarchive/archive_entry_stat.c b/libarchive/archive_entry_stat.c
+index 345d3d2..d7329aa 100644
+--- a/libarchive/archive_entry_stat.c
++++ b/libarchive/archive_entry_stat.c
+@@ -79,7 +79,22 @@ archive_entry_stat(struct archive_entry *entry)
+ 	st->st_size = (off_t)size;
+ 	if (st->st_size < 0 || (int64_t)st->st_size != size)
+ 		st->st_size = 0;
++#ifdef __MVS__
++	{
++		mode_t m = archive_entry_mode(entry);
++		mode_t type = m & AE_IFMT;
++		st->st_mode = m & ~AE_IFMT;
++		if (type == AE_IFREG) st->st_mode |= S_IFREG;
++		else if (type == AE_IFDIR) st->st_mode |= S_IFDIR;
++		else if (type == AE_IFLNK) st->st_mode |= S_IFLNK;
++		else if (type == AE_IFBLK) st->st_mode |= S_IFBLK;
++		else if (type == AE_IFCHR) st->st_mode |= S_IFCHR;
++		else if (type == AE_IFIFO) st->st_mode |= S_IFIFO;
++		else if (type == AE_IFSOCK) st->st_mode |= S_IFSOCK;
++	}
++#else
+ 	st->st_mode = archive_entry_mode(entry);
++#endif
+ 
+ 	/*
+ 	 * On systems that support high-res timestamps, copy that
+diff --git a/libarchive/archive_read_disk_posix.c b/libarchive/archive_read_disk_posix.c
+index fe8d06a..679237d 100644
+--- a/libarchive/archive_read_disk_posix.c
++++ b/libarchive/archive_read_disk_posix.c
+@@ -50,7 +50,7 @@
+ #endif
+ #ifdef HAVE_LINUX_FS_H
+ #include <linux/fs.h>
+-#elif HAVE_SYS_MOUNT_H
++#elif defined(HAVE_SYS_MOUNT_H) && !defined(__MVS__)
+ #include <sys/mount.h>
+ #endif
+ /*
+@@ -1551,6 +1551,17 @@ set_statvfs_transfer_size(struct filesystem *fs, const struct statvfs *sfs)
+ static inline __LA_UNUSED void
+ set_statfs_transfer_size(struct filesystem *fs, const struct statfs *sfs)
+ {
++#ifdef __MVS__
++	fs->xfer_align = -1;
++	fs->max_xfer_size = -1;
++#if defined(HAVE_STRUCT_STATFS_F_IOSIZE)
++	fs->min_xfer_size = sfs->f_iosize > 0 ? (long)sfs->f_iosize : -1;
++	fs->incr_xfer_size = sfs->f_iosize > 0 ? (long)sfs->f_iosize : -1;
++#else
++	fs->min_xfer_size = -1;
++	fs->incr_xfer_size = -1;
++#endif
++#else
+ 	fs->xfer_align = sfs->f_bsize > 0 ? (long)sfs->f_bsize : -1;
+ 	fs->max_xfer_size = -1;
+ #if defined(HAVE_STRUCT_STATFS_F_IOSIZE)
+@@ -1560,6 +1571,7 @@ set_statfs_transfer_size(struct filesystem *fs, const struct statfs *sfs)
+ 	fs->min_xfer_size = sfs->f_bsize > 0 ? (long)sfs->f_bsize : -1;
+ 	fs->incr_xfer_size = sfs->f_bsize > 0 ? (long)sfs->f_bsize : -1;
+ #endif
++#endif
+ }
+ #endif
+ 
+diff --git a/libarchive/archive_read_open_fd.c b/libarchive/archive_read_open_fd.c
+index 97c944b..5a06562 100644
+--- a/libarchive/archive_read_open_fd.c
++++ b/libarchive/archive_read_open_fd.c
+@@ -78,7 +78,10 @@ archive_read_open_fd(struct archive *a, int fd, size_t block_size)
+ 	}
+ 
+ 	mine = calloc(1, sizeof(*mine));
+-	b = malloc(block_size);
++	/* A block size of zero disables read-ahead (the buffer is never
++	 * used in that case).  malloc(0) may legitimately return NULL
++	 * (e.g. on z/OS), so always allocate at least one byte. */
++	b = malloc(block_size > 0 ? block_size : 1);
+ 	if (mine == NULL || b == NULL) {
+ 		archive_set_error(a, ENOMEM, "No memory");
+ 		free(mine);
+diff --git a/libarchive/archive_read_support_format_iso9660.c b/libarchive/archive_read_support_format_iso9660.c
+index 35f4c78..e9b3f55 100644
+--- a/libarchive/archive_read_support_format_iso9660.c
++++ b/libarchive/archive_read_support_format_iso9660.c
+@@ -3424,9 +3424,34 @@ isodate17(const unsigned char *v)
+ static time_t
+ time_from_tm(struct tm *t)
+ {
+-#if HAVE__MKGMTIME
++#if defined(__MVS__)
++	/* z/OS: zoslib's timegm() has mktime() semantics (it applies the
++	 * local timezone) and mktime() itself fails for pre-epoch times,
++	 * so compute the UTC time directly from the broken-down fields. */
++	{
++		int64_t y = t->tm_year + 1900LL;
++		int64_t m = t->tm_mon + 1;
++		int64_t d = t->tm_mday;
++		int64_t days;
++
++		/* Days since 1970-01-01 (Howard Hinnant's days_from_civil). */
++		y -= m <= 2;
++		{
++			int64_t era = (y >= 0 ? y : y - 399) / 400;
++			int64_t yoe = y - era * 400;			/* [0, 399] */
++			int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
++			int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++			days = era * 146097 + doe - 719468;
++		}
++		return ((time_t)(days * 86400
++		    + t->tm_hour * 3600
++		    + t->tm_min * 60
++		    + t->tm_sec));
++	}
++#elif HAVE__MKGMTIME
++
+         return _mkgmtime(t);
+-#elif HAVE_TIMEGM
++#elif HAVE_TIMEGM && !defined(__MVS__)
+         /* Use platform timegm() if available. */
+         return (timegm(t));
+ #else
+diff --git a/libarchive/archive_read_support_format_warc.c b/libarchive/archive_read_support_format_warc.c
+index 1e0053f..591bf66 100644
+--- a/libarchive/archive_read_support_format_warc.c
++++ b/libarchive/archive_read_support_format_warc.c
+@@ -505,9 +505,34 @@ strtoi_lim(const char *str, const char **ep, int llim, int ulim)
+ static time_t
+ time_from_tm(struct tm *t)
+ {
+-#if HAVE__MKGMTIME
++#if defined(__MVS__)
++	/* z/OS: zoslib's timegm() has mktime() semantics (it applies the
++	 * local timezone) and mktime() itself fails for pre-epoch times,
++	 * so compute the UTC time directly from the broken-down fields. */
++	{
++		int64_t y = t->tm_year + 1900LL;
++		int64_t m = t->tm_mon + 1;
++		int64_t d = t->tm_mday;
++		int64_t days;
++
++		/* Days since 1970-01-01 (Howard Hinnant's days_from_civil). */
++		y -= m <= 2;
++		{
++			int64_t era = (y >= 0 ? y : y - 399) / 400;
++			int64_t yoe = y - era * 400;			/* [0, 399] */
++			int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
++			int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++			days = era * 146097 + doe - 719468;
++		}
++		return ((time_t)(days * 86400
++		    + t->tm_hour * 3600
++		    + t->tm_min * 60
++		    + t->tm_sec));
++	}
++#elif HAVE__MKGMTIME
++
+         return _mkgmtime(t);
+-#elif HAVE_TIMEGM
++#elif HAVE_TIMEGM && !defined(__MVS__)
+         /* Use platform timegm() if available. */
+         return (timegm(t));
+ #else
+diff --git a/libarchive/archive_read_support_format_xar.c b/libarchive/archive_read_support_format_xar.c
+index c5d377e..61bb7fb 100644
+--- a/libarchive/archive_read_support_format_xar.c
++++ b/libarchive/archive_read_support_format_xar.c
+@@ -1128,9 +1128,34 @@ atohex(unsigned char *b, size_t bsize, const char *p, size_t psize)
+ static time_t
+ time_from_tm(struct tm *t)
+ {
+-#if HAVE__MKGMTIME
++#if defined(__MVS__)
++	/* z/OS: zoslib's timegm() has mktime() semantics (it applies the
++	 * local timezone) and mktime() itself fails for pre-epoch times,
++	 * so compute the UTC time directly from the broken-down fields. */
++	{
++		int64_t y = t->tm_year + 1900LL;
++		int64_t m = t->tm_mon + 1;
++		int64_t d = t->tm_mday;
++		int64_t days;
++
++		/* Days since 1970-01-01 (Howard Hinnant's days_from_civil). */
++		y -= m <= 2;
++		{
++			int64_t era = (y >= 0 ? y : y - 399) / 400;
++			int64_t yoe = y - era * 400;			/* [0, 399] */
++			int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
++			int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++			days = era * 146097 + doe - 719468;
++		}
++		return ((time_t)(days * 86400
++		    + t->tm_hour * 3600
++		    + t->tm_min * 60
++		    + t->tm_sec));
++	}
++#elif HAVE__MKGMTIME
++
+         return _mkgmtime(t);
+-#elif HAVE_TIMEGM
++#elif HAVE_TIMEGM && !defined(__MVS__)
+         /* Use platform timegm() if available. */
+         return (timegm(t));
+ #else
+diff --git a/libarchive/archive_write.c b/libarchive/archive_write.c
+index fca2c18..8a021d0 100644
+--- a/libarchive/archive_write.c
++++ b/libarchive/archive_write.c
+@@ -389,7 +389,10 @@ archive_write_client_open(struct archive_write_filter *f)
+ 	buffer_size = f->bytes_per_block;
+ 
+ 	client = calloc(1, sizeof(*client));
+-	buffer = malloc(buffer_size);
++	/* A block size of zero disables buffering (the buffer is never
++	 * used in that case).  malloc(0) may legitimately return NULL
++	 * (e.g. on z/OS), so always allocate at least one byte. */
++	buffer = malloc(buffer_size > 0 ? buffer_size : 1);
+ 	if (client == NULL || buffer == NULL) {
+ 		free(client);
+ 		free(buffer);
+diff --git a/libarchive/archive_write_disk_posix.c b/libarchive/archive_write_disk_posix.c
+index 2923086..ab4b558 100644
+--- a/libarchive/archive_write_disk_posix.c
++++ b/libarchive/archive_write_disk_posix.c
+@@ -415,6 +415,39 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
+ static ssize_t	_archive_write_disk_data_block(struct archive *, const void *,
+ 		    size_t, int64_t);
+ 
++#ifdef __MVS__
++/*
++ * z/OS: a->mode holds archive_entry (AE_IF*) encoded file types, but
++ * the system S_IS*() macros only understand the native z/OS encoding
++ * (file types in the high-order st_mode bits).  Translate an AE mode
++ * to the native encoding so the standard S_IS*() macros work on it.
++ * This mirrors the translation done in archive_entry_set_mode().
++ */
++static __LA_MODE_T
++la_ae_mode_to_native(__LA_MODE_T m)
++{
++	__LA_MODE_T perm = m & 07777;
++
++	switch (m & AE_IFMT) {
++	case AE_IFREG:	return (S_IFREG | perm);
++	case AE_IFDIR:	return (S_IFDIR | perm);
++	case AE_IFLNK:	return (S_IFLNK | perm);
++	case AE_IFBLK:	return (S_IFBLK | perm);
++	case AE_IFCHR:	return (S_IFCHR | perm);
++	case AE_IFIFO:	return (S_IFIFO | perm);
++	case AE_IFSOCK:	return (S_IFSOCK | perm);
++	default:		return (perm);
++	}
++}
++#define	LA_S_ISREG(m)	S_ISREG(la_ae_mode_to_native(m))
++#define	LA_S_ISDIR(m)	S_ISDIR(la_ae_mode_to_native(m))
++#define	LA_S_ISLNK(m)	S_ISLNK(la_ae_mode_to_native(m))
++#else
++#define	LA_S_ISREG(m)	S_ISREG(m)
++#define	LA_S_ISDIR(m)	S_ISDIR(m)
++#define	LA_S_ISLNK(m)	S_ISLNK(m)
++#endif
++
+ static int
+ la_mktemp(struct archive_write_disk *a)
+ {
+@@ -2098,7 +2131,7 @@ restore_entry(struct archive_write_disk *a)
+ {
+ 	int ret = ARCHIVE_OK, en;
+ 
+-	if (a->flags & ARCHIVE_EXTRACT_UNLINK && !S_ISDIR(a->mode)) {
++	if (a->flags & ARCHIVE_EXTRACT_UNLINK && !LA_S_ISDIR(a->mode)) {
+ 		/*
+ 		 * TODO: Fix this.  Apparently, there are platforms
+ 		 * that still allow root to hose the entire filesystem
+@@ -2146,7 +2179,7 @@ restore_entry(struct archive_write_disk *a)
+ 	if ((en == EISDIR || en == EEXIST)
+ 	    && (a->flags & ARCHIVE_EXTRACT_NO_OVERWRITE)) {
+ 		/* If we're not overwriting, we're done. */
+-		if (S_ISDIR(a->mode)) {
++		if (LA_S_ISDIR(a->mode)) {
+ 			/* Don't overwrite any settings on existing directories. */
+ 			a->todo = 0;
+ 		}
+@@ -2182,13 +2215,13 @@ restore_entry(struct archive_write_disk *a)
+ 		 * symlink to a dir if the client wants that.  So
+ 		 * follow the symlink if we're creating a dir.
+ 		 */
+-		if (S_ISDIR(a->mode))
++		if (LA_S_ISDIR(a->mode))
+ 			r = la_stat(a->name, &a->st);
+ 		/*
+ 		 * If it's not a dir (or it's a broken symlink),
+ 		 * then don't follow it.
+ 		 */
+-		if (r != 0 || !S_ISDIR(a->mode))
++		if (r != 0 || !LA_S_ISDIR(a->mode))
+ #ifdef HAVE_LSTAT
+ 			r = lstat(a->name, &a->st);
+ #else
+@@ -2225,7 +2258,7 @@ restore_entry(struct archive_write_disk *a)
+ 				(void)clear_nochange_fflags(a);
+ 
+ 			if ((a->flags & ARCHIVE_EXTRACT_SAFE_WRITES) &&
+-			    S_ISREG(a->mode)) {
++			    LA_S_ISREG(a->mode)) {
+ 				/* Use a temporary file to extract */
+ 				if ((a->fd = la_mktemp(a)) == -1) {
+ 					archive_set_error(&a->archive, errno,
+@@ -2246,7 +2279,7 @@ restore_entry(struct archive_write_disk *a)
+ 				/* Try again. */
+ 				en = create_filesystem_object(a);
+ 			}
+-		} else if (!S_ISDIR(a->mode)) {
++		} else if (!LA_S_ISDIR(a->mode)) {
+ 			/* A dir is in the way of a non-dir, rmdir it. */
+ 			if (a->flags & ARCHIVE_EXTRACT_CLEAR_NOCHANGE_FFLAGS)
+ 				(void)clear_nochange_fflags(a);
+@@ -3528,7 +3561,7 @@ set_ownership(struct archive_write_disk *a)
+ 		return (ARCHIVE_OK);
+ 	}
+ #elif HAVE_CHOWN
+-	if (!S_ISLNK(a->mode) && chown(a->name, a->uid, a->gid) == 0) {
++	if (!LA_S_ISLNK(a->mode) && chown(a->name, a->uid, a->gid) == 0) {
+ 		/* We've set owner and know uid/gid are correct. */
+ 		a->todo &= ~(TODO_OWNER | TODO_SGID_CHECK | TODO_SUID_CHECK);
+ 		return (ARCHIVE_OK);
+@@ -3566,6 +3599,26 @@ set_time(int fd, int mode, const char *name,
+ 		return futimens(fd, ts);
+ 	return utimensat(AT_FDCWD, name, ts, AT_SYMLINK_NOFOLLOW);
+ 
++#elif defined(HAVE_UTIMENSAT) && defined(__MVS__)
++	/*
++	 * z/OS: we have utimensat() but not futimens().  The
++	 * utimes()/lutimes()/futimes() entry points silently fail to
++	 * set timestamps in ASCII-mode executables (they misread the
++	 * 64-bit tv_sec layout of struct timeval), so always use
++	 * utimensat() on the pathname.
++	 */
++	struct timespec ts[2];
++	(void)fd; /* UNUSED */
++	ts[0].tv_sec = atime;
++	ts[0].tv_nsec = atime_nsec;
++	ts[1].tv_sec = mtime;
++	ts[1].tv_nsec = mtime_nsec;
++	/* z/OS cannot set timestamps on symlinks themselves; follow
++	 * would damage the target of a dangling link, so skip those. */
++	if ((mode & AE_IFMT) == AE_IFLNK)
++		return (0);
++	return utimensat(AT_FDCWD, name, ts, 0);
++
+ #elif HAVE_UTIMES
+ 	/*
+ 	 * The utimes()-family functions support µs-resolution and
+@@ -3743,7 +3796,12 @@ set_times_from_entry(struct archive_write_disk *a)
+ 		ctime_nsec = archive_entry_ctime_nsec(a->entry);
+ 	}
+ 
+-	return set_times(a, a->fd, a->mode, a->name,
++	/* With ARCHIVE_EXTRACT_SAFE_WRITES, the data currently lives in
++	 * the temporary file, so timestamps must be applied there (the
++	 * final name is only valid after the rename below); this matters
++	 * for the pathname-based z/OS implementation of set_time(). */
++	return set_times(a, a->fd, a->mode,
++			 a->tmpname != NULL ? a->tmpname : a->name,
+ 			 atime, atime_nsec,
+ 			 birthtime, birthtime_nsec,
+ 			 mtime, mtime_nsec,
+@@ -3810,7 +3868,7 @@ set_mode(struct archive_write_disk *a, int mode)
+ 		a->todo &= ~TODO_SUID_CHECK;
+ 	}
+ 
+-	if (S_ISLNK(a->mode)) {
++	if (LA_S_ISLNK(a->mode)) {
+ #ifdef HAVE_LCHMOD
+ 		/*
+ 		 * If this is a symlink, use lchmod().  If the
+@@ -3841,7 +3899,7 @@ set_mode(struct archive_write_disk *a, int mode)
+ 			}
+ 		}
+ #endif
+-	} else if (!S_ISDIR(a->mode)) {
++	} else if (!LA_S_ISDIR(a->mode)) {
+ 		/*
+ 		 * If it's not a symlink and not a dir, then use
+ 		 * fchmod() or chmod(), depending on whether we have
+diff --git a/libarchive/archive_write_set_format_iso9660.c b/libarchive/archive_write_set_format_iso9660.c
+index d3f7398..fd84113 100644
+--- a/libarchive/archive_write_set_format_iso9660.c
++++ b/libarchive/archive_write_set_format_iso9660.c
+@@ -2495,16 +2495,58 @@ set_digit(unsigned char *p, size_t s, int value)
+ 	}
+ }
+ 
+-#if defined(HAVE_STRUCT_TM_TM_GMTOFF)
+-#define get_gmoffset(tm)	((tm)->tm_gmtoff)
++#if defined(__MVS__)
++/*
++ * z/OS notes:
++ *
++ *  - Although struct tm has a tm_gmtoff member, the LE runtime does
++ *    not populate it in localtime() results.
++ *  - mktime() fails (returns (time_t)-1) for instants before
++ *    1970-01-01 00:00 local time, so it cannot be used to reconstruct
++ *    a time_t from a struct tm.
++ *
++ * So compute the UTC offset arithmetically: la_time_from_tm()
++ * interprets broken-down fields as UTC (no mktime involved), and the
++ * offset is simply the difference between the instant and the UTC
++ * reading of its local broken-down time.  Positive east of UTC.
++ */
++static time_t
++la_time_from_tm(struct tm *tm)
++{
++	int64_t y = tm->tm_year + 1900LL;
++	int64_t m = tm->tm_mon + 1;
++	int64_t d = tm->tm_mday;
++	int64_t days;
++
++	/* Days since 1970-01-01 (Howard Hinnant's days_from_civil). */
++	y -= m <= 2;
++	{
++		int64_t era = (y >= 0 ? y : y - 399) / 400;
++		int64_t yoe = y - era * 400;			/* [0, 399] */
++		int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
++		int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++		days = era * 146097 + doe - 719468;
++	}
++	return ((time_t)(days * 86400
++	    + tm->tm_hour * 3600
++	    + tm->tm_min * 60
++	    + tm->tm_sec));
++}
++#define	get_gmoffset(tm, t)	((long)(la_time_from_tm(tm) - (t)))
++#elif defined(HAVE_STRUCT_TM_TM_GMTOFF)
++/* All definitions take (tm, t) so callers can pass the time_t
++ * unconditionally; only the z/OS version needs it. */
++#define get_gmoffset(tm, t)	((void)(t), (tm)->tm_gmtoff)
+ #elif defined(HAVE_STRUCT_TM___TM_GMTOFF)
+-#define get_gmoffset(tm)	((tm)->__tm_gmtoff)
++#define get_gmoffset(tm, t)	((void)(t), (tm)->__tm_gmtoff)
+ #else
+ static long
+-get_gmoffset(struct tm *tm)
++get_gmoffset(struct tm *tm, time_t t)
+ {
+ 	long offset;
+ 
++	(void)t; /* UNUSED */
++
+ #if defined(HAVE__GET_TIMEZONE)
+ 	_get_timezone(&offset);
+ #elif defined(__CYGWIN__) || defined(__MINGW32__) || defined(__BORLANDC__)
+@@ -2551,7 +2593,7 @@ set_date_time(unsigned char *p, time_t t)
+ 	set_digit(p+10, 2, tm.tm_min);
+ 	set_digit(p+12, 2, tm.tm_sec);
+ 	set_digit(p+14, 2, 0);
+-	set_num_712(p+16, (char)(get_gmoffset(&tm)/(60*15)));
++	set_num_712(p+16, (char)(get_gmoffset(&tm, t)/(60*15)));
+ }
+ 
+ static void
+@@ -2573,7 +2615,7 @@ set_time_915(unsigned char *p, time_t t)
+ 	set_num_711(p+3, tm.tm_hour);
+ 	set_num_711(p+4, tm.tm_min);
+ 	set_num_711(p+5, tm.tm_sec);
+-	set_num_712(p+6, (char)(get_gmoffset(&tm)/(60*15)));
++	set_num_712(p+6, (char)(get_gmoffset(&tm, t)/(60*15)));
+ }
+ 
+ 
