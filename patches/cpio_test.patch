@@ -1,0 +1,17 @@
+diff --git a/cpio/test/test_owner_parse.c b/cpio/test/test_owner_parse.c
+index bd68f21..2b4f37f 100644
+--- a/cpio/test/test_owner_parse.c
++++ b/cpio/test/test_owner_parse.c
+@@ -9,7 +9,11 @@
+ #include "../cpio.h"
+ #include "lafe_err.h"
+ 
+-#if !defined(_WIN32)
++#if defined(__MVS__)
++/* z/OS: uid 0 is normally named BPXROOT with a site-specific primary
++ * group, so the name-based owner lookups below are not portable;
++ * leave ROOT undefined to skip them (the numeric lookups still run). */
++#elif !defined(_WIN32)
+ #define ROOT "root"
+ static const int root_uids[] = { 0 };
+ static const int root_gids[] = { 0, 1 };
