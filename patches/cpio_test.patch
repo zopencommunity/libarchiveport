@@ -1,17 +1,35 @@
 diff --git a/cpio/test/test_owner_parse.c b/cpio/test/test_owner_parse.c
-index bd68f21..2b4f37f 100644
+index bd68f21..3656930 100644
 --- a/cpio/test/test_owner_parse.c
 +++ b/cpio/test/test_owner_parse.c
-@@ -9,7 +9,11 @@
- #include "../cpio.h"
- #include "lafe_err.h"
+@@ -55,6 +55,10 @@ DEFINE_TEST(test_owner_parse)
+ 	struct cpio_owner owner;
+ 	const char *errstr;
  
--#if !defined(_WIN32)
-+#if defined(__MVS__)
-+/* z/OS: uid 0 is normally named BPXROOT with a site-specific primary
-+ * group, so the name-based owner lookups below are not portable;
-+ * leave ROOT undefined to skip them (the numeric lookups still run). */
-+#elif !defined(_WIN32)
- #define ROOT "root"
- static const int root_uids[] = { 0 };
- static const int root_gids[] = { 0, 1 };
++#ifndef __MVS__
++	/* z/OS: uid 0 is normally named BPXROOT with a site-specific
++	 * primary group, so superuser name lookups are not portable;
++	 * skip just those and keep the portable parser tests below. */
+ 	assert(0 == owner_parse(ROOT, &owner, &errstr));
+ 	assert(int_in_list(owner.uid, root_uids,
+ 		sizeof(root_uids)/sizeof(root_uids[0])));
+@@ -74,6 +78,7 @@ DEFINE_TEST(test_owner_parse)
+ 	assert(int_in_list(owner.gid, root_gids,
+ 		sizeof(root_gids)/sizeof(root_gids[0])));
+ 	free_cpio_owner(&owner);
++#endif
+ 
+ 	assert(0 == owner_parse("111", &owner, &errstr));
+ 	assertEqualInt(111, owner.uid);
+@@ -117,7 +122,11 @@ DEFINE_TEST(test_owner_parse)
+ 	free_cpio_owner(&owner);
+ 
+ 	errstr = NULL;
++#ifdef __MVS__
++	assert(0 != owner_parse("111:nonexistentgroup", &owner, &errstr));
++#else
+ 	assert(0 != owner_parse(ROOT ":nonexistentgroup", &owner, &errstr));
++#endif
+ 	assertEqualString(errstr, "Couldn't lookup group ``nonexistentgroup''");
+ 	free_cpio_owner(&owner);
+ 

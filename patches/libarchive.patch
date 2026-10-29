@@ -112,7 +112,7 @@ index 345d3d2..d7329aa 100644
  	/*
  	 * On systems that support high-res timestamps, copy that
 diff --git a/libarchive/archive_read_disk_posix.c b/libarchive/archive_read_disk_posix.c
-index fe8d06a..61aa813 100644
+index fe8d06a..679237d 100644
 --- a/libarchive/archive_read_disk_posix.c
 +++ b/libarchive/archive_read_disk_posix.c
 @@ -50,7 +50,7 @@
@@ -150,30 +150,6 @@ index fe8d06a..61aa813 100644
  }
  #endif
  
-@@ -2176,6 +2188,7 @@ tree_descent(struct tree *t)
- 	new_fd = open_on_current_dir(t, t->stack->name.s, flag);
- 	__archive_ensure_cloexec_flag(new_fd);
- 	if (new_fd < 0) {
-+		fprintf(stderr, "DBG tree_errno line %d: errno=%d path=%s\n", __LINE__, errno, tree_current_path(t));
- 		t->tree_errno = errno;
- 		r = TREE_ERROR_DIR;
- 	} else {
-@@ -2213,6 +2226,7 @@ tree_ascend(struct tree *t)
- 		__archive_ensure_cloexec_flag(new_fd);
- 	}
- 	if (new_fd < 0) {
-+		fprintf(stderr, "DBG tree_errno line %d: errno=%d path=%s\n", __LINE__, errno, tree_current_path(t));
- 		t->tree_errno = errno;
- 		r = TREE_ERROR_FATAL;
- 	} else {
-@@ -2390,6 +2404,7 @@ tree_dir_next_posix(struct tree *t)
- 		if (t->d == NULL) {
- 			r = tree_ascend(t); /* Undo "chdir" */
- 			tree_pop(t);
-+			fprintf(stderr, "DBG tree_errno line %d: errno=%d path=%s\n", __LINE__, errno, tree_current_path(t));
- 			t->tree_errno = errno;
- 			t->visit_type = r != 0 ? r : TREE_ERROR_DIR;
- 			return (t->visit_type);
 diff --git a/libarchive/archive_read_open_fd.c b/libarchive/archive_read_open_fd.c
 index 97c944b..5a06562 100644
 --- a/libarchive/archive_read_open_fd.c
@@ -330,7 +306,7 @@ index fca2c18..8a021d0 100644
  		free(client);
  		free(buffer);
 diff --git a/libarchive/archive_write_disk_posix.c b/libarchive/archive_write_disk_posix.c
-index 2923086..34f9987 100644
+index 2923086..ab4b558 100644
 --- a/libarchive/archive_write_disk_posix.c
 +++ b/libarchive/archive_write_disk_posix.c
 @@ -415,6 +415,39 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
@@ -461,7 +437,21 @@ index 2923086..34f9987 100644
  #elif HAVE_UTIMES
  	/*
  	 * The utimes()-family functions support µs-resolution and
-@@ -3810,7 +3863,7 @@ set_mode(struct archive_write_disk *a, int mode)
+@@ -3743,7 +3796,12 @@ set_times_from_entry(struct archive_write_disk *a)
+ 		ctime_nsec = archive_entry_ctime_nsec(a->entry);
+ 	}
+ 
+-	return set_times(a, a->fd, a->mode, a->name,
++	/* With ARCHIVE_EXTRACT_SAFE_WRITES, the data currently lives in
++	 * the temporary file, so timestamps must be applied there (the
++	 * final name is only valid after the rename below); this matters
++	 * for the pathname-based z/OS implementation of set_time(). */
++	return set_times(a, a->fd, a->mode,
++			 a->tmpname != NULL ? a->tmpname : a->name,
+ 			 atime, atime_nsec,
+ 			 birthtime, birthtime_nsec,
+ 			 mtime, mtime_nsec,
+@@ -3810,7 +3868,7 @@ set_mode(struct archive_write_disk *a, int mode)
  		a->todo &= ~TODO_SUID_CHECK;
  	}
  
@@ -470,7 +460,7 @@ index 2923086..34f9987 100644
  #ifdef HAVE_LCHMOD
  		/*
  		 * If this is a symlink, use lchmod().  If the
-@@ -3841,7 +3894,7 @@ set_mode(struct archive_write_disk *a, int mode)
+@@ -3841,7 +3899,7 @@ set_mode(struct archive_write_disk *a, int mode)
  			}
  		}
  #endif
@@ -480,14 +470,15 @@ index 2923086..34f9987 100644
  		 * If it's not a symlink and not a dir, then use
  		 * fchmod() or chmod(), depending on whether we have
 diff --git a/libarchive/archive_write_set_format_iso9660.c b/libarchive/archive_write_set_format_iso9660.c
-index d3f7398..040874a 100644
+index d3f7398..fd84113 100644
 --- a/libarchive/archive_write_set_format_iso9660.c
 +++ b/libarchive/archive_write_set_format_iso9660.c
-@@ -2495,7 +2495,45 @@ set_digit(unsigned char *p, size_t s, int value)
+@@ -2495,16 +2495,58 @@ set_digit(unsigned char *p, size_t s, int value)
  	}
  }
  
 -#if defined(HAVE_STRUCT_TM_TM_GMTOFF)
+-#define get_gmoffset(tm)	((tm)->tm_gmtoff)
 +#if defined(__MVS__)
 +/*
 + * z/OS notes:
@@ -527,10 +518,25 @@ index d3f7398..040874a 100644
 +}
 +#define	get_gmoffset(tm, t)	((long)(la_time_from_tm(tm) - (t)))
 +#elif defined(HAVE_STRUCT_TM_TM_GMTOFF)
- #define get_gmoffset(tm)	((tm)->tm_gmtoff)
++/* All definitions take (tm, t) so callers can pass the time_t
++ * unconditionally; only the z/OS version needs it. */
++#define get_gmoffset(tm, t)	((void)(t), (tm)->tm_gmtoff)
  #elif defined(HAVE_STRUCT_TM___TM_GMTOFF)
- #define get_gmoffset(tm)	((tm)->__tm_gmtoff)
-@@ -2551,7 +2589,7 @@ set_date_time(unsigned char *p, time_t t)
+-#define get_gmoffset(tm)	((tm)->__tm_gmtoff)
++#define get_gmoffset(tm, t)	((void)(t), (tm)->__tm_gmtoff)
+ #else
+ static long
+-get_gmoffset(struct tm *tm)
++get_gmoffset(struct tm *tm, time_t t)
+ {
+ 	long offset;
+ 
++	(void)t; /* UNUSED */
++
+ #if defined(HAVE__GET_TIMEZONE)
+ 	_get_timezone(&offset);
+ #elif defined(__CYGWIN__) || defined(__MINGW32__) || defined(__BORLANDC__)
+@@ -2551,7 +2593,7 @@ set_date_time(unsigned char *p, time_t t)
  	set_digit(p+10, 2, tm.tm_min);
  	set_digit(p+12, 2, tm.tm_sec);
  	set_digit(p+14, 2, 0);
@@ -539,7 +545,7 @@ index d3f7398..040874a 100644
  }
  
  static void
-@@ -2573,7 +2611,7 @@ set_time_915(unsigned char *p, time_t t)
+@@ -2573,7 +2615,7 @@ set_time_915(unsigned char *p, time_t t)
  	set_num_711(p+3, tm.tm_hour);
  	set_num_711(p+4, tm.tm_min);
  	set_num_711(p+5, tm.tm_sec);
