@@ -367,12 +367,15 @@ index c5d377e..61bb7fb 100644
          return (timegm(t));
  #else
 diff --git a/libarchive/archive_read_support_format_zip.c b/libarchive/archive_read_support_format_zip.c
-index 546c90b..f4fd539 100644
+index 546c90b..797bd81 100644
 --- a/libarchive/archive_read_support_format_zip.c
 +++ b/libarchive/archive_read_support_format_zip.c
-@@ -110,6 +110,7 @@ struct zip_entry {
+@@ -108,8 +108,9 @@ struct zip_entry {
+ 	uint16_t		zip_flags; /* From GP Flags Field */
+ 	unsigned char		compression;
  	unsigned char		system; /* From "version written by" */
- 	unsigned char		flags; /* Our extra markers. */
+-	unsigned char		flags; /* Our extra markers. */
++	unsigned short		flags; /* Our extra markers. */
  	unsigned char		decdat;/* Used for Decryption check */
 +	unsigned short		zos_ccsid;	/* From a "zs" extra field */
  
@@ -413,7 +416,7 @@ index 546c90b..f4fd539 100644
  		case 0x9901:
  			/* WinZip AES extra data field. */
  			if (datasize < 6) {
-@@ -1495,6 +1517,29 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
+@@ -1495,6 +1517,31 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
  	archive_entry_set_mode(entry, zip_entry->mode);
  	archive_entry_set_uid(entry, zip_entry->uid);
  	archive_entry_set_gid(entry, zip_entry->gid);
@@ -434,10 +437,12 @@ index 546c90b..f4fd539 100644
 +			len = snprintf(tag, sizeof(tag), "0 %u",
 +			    zip_entry->zos_ccsid);
 +		else
-+			len = 0;	/* Untagged: nothing. */
-+		if (len > 0)
-+			archive_entry_xattr_add_entry(entry,
-+			    "ZOS.taginfo", tag, len);
++			/* Explicitly untagged (the "zs" field is present
++			 * with CCSID 0); record it so the extractor can
++			 * clear any existing tag. */
++			len = snprintf(tag, sizeof(tag), "0");
++		archive_entry_xattr_add_entry(entry,
++		    "ZOS.taginfo", tag, len);
 +	}
 +#endif
  	archive_entry_set_mtime(entry, zip_entry->mtime, zip_entry->mtime_ns);
@@ -460,7 +465,7 @@ index fca2c18..8a021d0 100644
  		free(client);
  		free(buffer);
 diff --git a/libarchive/archive_write_disk_posix.c b/libarchive/archive_write_disk_posix.c
-index 2923086..6801b9e 100644
+index 2923086..9295ac1 100644
 --- a/libarchive/archive_write_disk_posix.c
 +++ b/libarchive/archive_write_disk_posix.c
 @@ -210,6 +210,13 @@ struct fixup_entry {
@@ -477,7 +482,7 @@ index 2923086..6801b9e 100644
  #define	TODO_MODE		(TODO_MODE_BASE|TODO_SUID|TODO_SGID)
  #define	TODO_TIMES		ARCHIVE_EXTRACT_TIME
  #define	TODO_OWNER		ARCHIVE_EXTRACT_OWNER
-@@ -415,6 +422,349 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
+@@ -415,6 +422,348 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
  static ssize_t	_archive_write_disk_data_block(struct archive *, const void *,
  		    size_t, int64_t);
  
@@ -710,8 +715,11 @@ index 2923086..6801b9e 100644
 +			at.att_filetag.ft_txtflag = 1;
 +			r2 = zos_chattr(a, &at, "taginfo");
 +			if (r2 < ret) ret = r2;
-+		} else if (txtflag == 0 && ccsid > 0 && ccsid <= 65535) {
-+			/* Binary-tagged file (e.g. CCSID 65535). */
++		} else if (txtflag == 0 && ccsid >= 0 && ccsid <= 65535) {
++			/* Binary-tagged (e.g. CCSID 65535), or explicitly
++			 * untagged (CCSID 0): __chattr() with ccsid 0
++			 * clears any tag the destination file may have,
++			 * restoring the archived state. */
 +			attrib_t at;
 +			memset(&at, 0, sizeof(at));
 +			at.att_id[0] = 'A'; at.att_id[1] = 'T';
@@ -794,26 +802,22 @@ index 2923086..6801b9e 100644
 +			r2 = zos_set_extattr(a, ebuf);
 +			if (r2 < ret) ret = r2;
 +		} else if (tarport_genvalue >= 0) {
++			/* ZOS.genvalue is present: apply the apsl bits
++			 * even when they are all zero, so that bits set
++			 * on the destination (e.g. an existing
++			 * __ST_NO_SHAREAS) are cleared to restore the
++			 * archived state. */
++			snprintf(ebuf, sizeof(ebuf), "%c%c%c%c",
++			    (tarport_genvalue & __ST_APF_AUTH) ? 'a' : '-',
++			    (tarport_genvalue & __ST_PROG_CTL) ? 'p' : '-',
++			    (tarport_genvalue & __ST_NO_SHAREAS) ? '-' : 's',
 +#ifdef __ST_SHARE_LIB
-+			long mask = __ST_APF_AUTH | __ST_PROG_CTL |
-+			    __ST_NO_SHAREAS | __ST_SHARE_LIB;
++			    (tarport_genvalue & __ST_SHARE_LIB) ? 'l' : '-');
 +#else
-+			long mask = __ST_APF_AUTH | __ST_PROG_CTL |
-+			    __ST_NO_SHAREAS;
++			    '-');
 +#endif
-+			if (tarport_genvalue & mask) {
-+				snprintf(ebuf, sizeof(ebuf), "%c%c%c%c",
-+				    (tarport_genvalue & __ST_APF_AUTH) ? 'a' : '-',
-+				    (tarport_genvalue & __ST_PROG_CTL) ? 'p' : '-',
-+				    (tarport_genvalue & __ST_NO_SHAREAS) ? '-' : 's',
-+#ifdef __ST_SHARE_LIB
-+				    (tarport_genvalue & __ST_SHARE_LIB) ? 'l' : '-');
-+#else
-+				    '-');
-+#endif
-+				r2 = zos_set_extattr(a, ebuf);
-+				if (r2 < ret) ret = r2;
-+			}
++			r2 = zos_set_extattr(a, ebuf);
++			if (r2 < ret) ret = r2;
 +		}
 +	}
 +	return (ret);
@@ -827,7 +831,7 @@ index 2923086..6801b9e 100644
  static int
  la_mktemp(struct archive_write_disk *a)
  {
-@@ -795,6 +1145,12 @@ _archive_write_disk_header(struct archive *_a, struct archive_entry *entry)
+@@ -795,6 +1144,12 @@ _archive_write_disk_header(struct archive *_a, struct archive_entry *entry)
  #endif
  		a->todo |= TODO_XATTR;
  	}
@@ -840,7 +844,7 @@ index 2923086..6801b9e 100644
  	if (a->flags & ARCHIVE_EXTRACT_FFLAGS)
  		a->todo |= TODO_FFLAGS;
  	if (a->flags & ARCHIVE_EXTRACT_SECURE_SYMLINKS) {
-@@ -1879,6 +2235,33 @@ _archive_write_disk_finish_entry(struct archive *_a)
+@@ -1879,6 +2234,33 @@ _archive_write_disk_finish_entry(struct archive *_a)
  		if (r2 < ret) ret = r2;
  	}
  
@@ -874,7 +878,7 @@ index 2923086..6801b9e 100644
  	/*
  	 * Some flags prevent file modification; they must be restored after
  	 * file contents are written.
-@@ -2098,7 +2481,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2098,7 +2480,7 @@ restore_entry(struct archive_write_disk *a)
  {
  	int ret = ARCHIVE_OK, en;
  
@@ -883,7 +887,7 @@ index 2923086..6801b9e 100644
  		/*
  		 * TODO: Fix this.  Apparently, there are platforms
  		 * that still allow root to hose the entire filesystem
-@@ -2146,7 +2529,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2146,7 +2528,7 @@ restore_entry(struct archive_write_disk *a)
  	if ((en == EISDIR || en == EEXIST)
  	    && (a->flags & ARCHIVE_EXTRACT_NO_OVERWRITE)) {
  		/* If we're not overwriting, we're done. */
@@ -892,7 +896,7 @@ index 2923086..6801b9e 100644
  			/* Don't overwrite any settings on existing directories. */
  			a->todo = 0;
  		}
-@@ -2182,13 +2565,13 @@ restore_entry(struct archive_write_disk *a)
+@@ -2182,13 +2564,13 @@ restore_entry(struct archive_write_disk *a)
  		 * symlink to a dir if the client wants that.  So
  		 * follow the symlink if we're creating a dir.
  		 */
@@ -908,7 +912,7 @@ index 2923086..6801b9e 100644
  #ifdef HAVE_LSTAT
  			r = lstat(a->name, &a->st);
  #else
-@@ -2225,7 +2608,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2225,7 +2607,7 @@ restore_entry(struct archive_write_disk *a)
  				(void)clear_nochange_fflags(a);
  
  			if ((a->flags & ARCHIVE_EXTRACT_SAFE_WRITES) &&
@@ -917,7 +921,7 @@ index 2923086..6801b9e 100644
  				/* Use a temporary file to extract */
  				if ((a->fd = la_mktemp(a)) == -1) {
  					archive_set_error(&a->archive, errno,
-@@ -2246,7 +2629,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2246,7 +2628,7 @@ restore_entry(struct archive_write_disk *a)
  				/* Try again. */
  				en = create_filesystem_object(a);
  			}
@@ -926,7 +930,7 @@ index 2923086..6801b9e 100644
  			/* A dir is in the way of a non-dir, rmdir it. */
  			if (a->flags & ARCHIVE_EXTRACT_CLEAR_NOCHANGE_FFLAGS)
  				(void)clear_nochange_fflags(a);
-@@ -3528,7 +3911,7 @@ set_ownership(struct archive_write_disk *a)
+@@ -3528,7 +3910,7 @@ set_ownership(struct archive_write_disk *a)
  		return (ARCHIVE_OK);
  	}
  #elif HAVE_CHOWN
@@ -935,7 +939,7 @@ index 2923086..6801b9e 100644
  		/* We've set owner and know uid/gid are correct. */
  		a->todo &= ~(TODO_OWNER | TODO_SGID_CHECK | TODO_SUID_CHECK);
  		return (ARCHIVE_OK);
-@@ -3566,6 +3949,26 @@ set_time(int fd, int mode, const char *name,
+@@ -3566,6 +3948,26 @@ set_time(int fd, int mode, const char *name,
  		return futimens(fd, ts);
  	return utimensat(AT_FDCWD, name, ts, AT_SYMLINK_NOFOLLOW);
  
@@ -962,7 +966,7 @@ index 2923086..6801b9e 100644
  #elif HAVE_UTIMES
  	/*
  	 * The utimes()-family functions support µs-resolution and
-@@ -3743,7 +4146,12 @@ set_times_from_entry(struct archive_write_disk *a)
+@@ -3743,7 +4145,12 @@ set_times_from_entry(struct archive_write_disk *a)
  		ctime_nsec = archive_entry_ctime_nsec(a->entry);
  	}
  
@@ -976,7 +980,7 @@ index 2923086..6801b9e 100644
  			 atime, atime_nsec,
  			 birthtime, birthtime_nsec,
  			 mtime, mtime_nsec,
-@@ -3810,7 +4218,7 @@ set_mode(struct archive_write_disk *a, int mode)
+@@ -3810,7 +4217,7 @@ set_mode(struct archive_write_disk *a, int mode)
  		a->todo &= ~TODO_SUID_CHECK;
  	}
  
@@ -985,7 +989,7 @@ index 2923086..6801b9e 100644
  #ifdef HAVE_LCHMOD
  		/*
  		 * If this is a symlink, use lchmod().  If the
-@@ -3841,7 +4249,7 @@ set_mode(struct archive_write_disk *a, int mode)
+@@ -3841,7 +4248,7 @@ set_mode(struct archive_write_disk *a, int mode)
  			}
  		}
  #endif
@@ -994,7 +998,7 @@ index 2923086..6801b9e 100644
  		/*
  		 * If it's not a symlink and not a dir, then use
  		 * fchmod() or chmod(), depending on whether we have
-@@ -4540,6 +4948,11 @@ set_xattrs(struct archive_write_disk *a)
+@@ -4540,6 +4947,11 @@ set_xattrs(struct archive_write_disk *a)
  
  		if (name == NULL)
  			continue;
@@ -1006,7 +1010,7 @@ index 2923086..6801b9e 100644
  #if ARCHIVE_XATTR_LINUX
  		/* Linux: quietly skip POSIX.1e ACL extended attributes */
  		if (strncmp(name, "system.", 7) == 0 &&
-@@ -4629,6 +5042,11 @@ set_xattrs(struct archive_write_disk *a)
+@@ -4629,6 +5041,11 @@ set_xattrs(struct archive_write_disk *a)
  			int e;
  			int namespace;
  
@@ -1018,7 +1022,7 @@ index 2923086..6801b9e 100644
  			namespace = EXTATTR_NAMESPACE_USER;
  
  			if (strncmp(name, "user.", 5) == 0) {
-@@ -4714,15 +5132,29 @@ set_xattrs(struct archive_write_disk *a)
+@@ -4714,15 +5131,29 @@ set_xattrs(struct archive_write_disk *a)
  static int
  set_xattrs(struct archive_write_disk *a)
  {
