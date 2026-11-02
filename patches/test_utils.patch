@@ -1,8 +1,8 @@
 diff --git a/test_utils/test_common.h b/test_utils/test_common.h
-index ed31fb1..71d8285 100644
+index 6562b4f..0bd8a97 100644
 --- a/test_utils/test_common.h
 +++ b/test_utils/test_common.h
-@@ -428,6 +428,95 @@ extern const char *testworkdir;
+@@ -425,6 +425,95 @@ extern const char *testworkdir;
  #include "archive.h"
  #include "archive_entry.h"
  
@@ -99,10 +99,10 @@ index ed31fb1..71d8285 100644
  struct archive_test_acl_t {
  	int type;  /* Type of ACL */
 diff --git a/test_utils/test_main.c b/test_utils/test_main.c
-index 3ceb84e..7673d71 100644
+index 8a22229..0243419 100644
 --- a/test_utils/test_main.c
 +++ b/test_utils/test_main.c
-@@ -2277,7 +2277,20 @@ assertion_utimes(const char *file, int line, const char *pathname,
+@@ -2281,7 +2281,20 @@ assertion_utimes(const char *file, int line, const char *pathname,
  	times[0].tv_sec = at;
  	times[0].tv_usec = at_nsec / 1000;
  
@@ -124,7 +124,7 @@ index 3ceb84e..7673d71 100644
  	r = lutimes(pathname, times);
  #else
  	r = utimes(pathname, times);
-@@ -3676,6 +3689,17 @@ test_run(int i, const char *tmpdir)
+@@ -3680,6 +3693,17 @@ test_run(int i, const char *tmpdir)
  		printf("%3d: %s\n", i, tests[i].name);
  	}
  
@@ -142,7 +142,7 @@ index 3ceb84e..7673d71 100644
  	/* Chdir to the top-level work directory. */
  	if (!assertChdir(tmpdir)) {
  		fprintf(stderr,
-@@ -3850,6 +3874,7 @@ get_refdir(const char *d)
+@@ -3854,6 +3878,7 @@ get_refdir(const char *d)
  {
  	size_t tried_size, buff_size;
  	char *buff, *tried, *pwd = NULL, *p = NULL;
@@ -150,7 +150,7 @@ index 3ceb84e..7673d71 100644
  
  #ifdef PATH_MAX
  	buff_size = PATH_MAX;
-@@ -3883,7 +3908,11 @@ get_refdir(const char *d)
+@@ -3887,7 +3912,11 @@ get_refdir(const char *d)
  
  	/* Get the current dir. */
  #if defined(PATH_MAX) && !defined(__GLIBC__)
@@ -162,7 +162,7 @@ index 3ceb84e..7673d71 100644
  #else
  	pwd = getcwd(NULL, 0);
  #endif
-@@ -4075,6 +4104,7 @@ main(int argc, char **argv)
+@@ -4079,6 +4108,7 @@ main(int argc, char **argv)
  	char tmpdir[256];
  #endif
  	char *pwd, *testprogdir, *tmp2 = NULL, *vlevel = NULL;
@@ -170,7 +170,7 @@ index 3ceb84e..7673d71 100644
  	char tmpdir_timestamp[32];
  #ifdef RUN_TEST_UNPRIV
  	struct passwd *pw;
-@@ -4084,7 +4114,11 @@ main(int argc, char **argv)
+@@ -4088,7 +4118,11 @@ main(int argc, char **argv)
  
  	/* Get the current dir. */
  #if defined(PATH_MAX) && !defined(__GLIBC__)

@@ -39,7 +39,7 @@ index 758d766..7d0c172 100644
  }
  
 diff --git a/libarchive/archive_entry.h b/libarchive/archive_entry.h
-index 50e10a1..6b21351 100644
+index ce9626a..6c89568 100644
 --- a/libarchive/archive_entry.h
 +++ b/libarchive/archive_entry.h
 @@ -38,6 +38,9 @@
@@ -167,10 +167,10 @@ index 97c944b..5a06562 100644
  		archive_set_error(a, ENOMEM, "No memory");
  		free(mine);
 diff --git a/libarchive/archive_read_support_format_iso9660.c b/libarchive/archive_read_support_format_iso9660.c
-index 35f4c78..e9b3f55 100644
+index 2d95457..1866e38 100644
 --- a/libarchive/archive_read_support_format_iso9660.c
 +++ b/libarchive/archive_read_support_format_iso9660.c
-@@ -3424,9 +3424,34 @@ isodate17(const unsigned char *v)
+@@ -3430,9 +3430,34 @@ isodate17(const unsigned char *v)
  static time_t
  time_from_tm(struct tm *t)
  {
@@ -207,6 +207,242 @@ index 35f4c78..e9b3f55 100644
          /* Use platform timegm() if available. */
          return (timegm(t));
  #else
+diff --git a/libarchive/archive_read_support_format_tar.c b/libarchive/archive_read_support_format_tar.c
+index 8b86b97..29328a3 100644
+--- a/libarchive/archive_read_support_format_tar.c
++++ b/libarchive/archive_read_support_format_tar.c
+@@ -125,6 +125,15 @@ struct tar {
+ 	struct archive_string	 entry_gname;
+ 	struct archive_string	 entry_linkpath;
+ 	struct archive_string	 line;
++	/* ZOS.* records from a global (g) extended header; they provide
++	 * defaults for entries that carry no per-file record.  IBM pax
++	 * writes the z/OS defaults there, and -o ZOS.*=value overrides
++	 * land there as well. */
++	struct {
++		char		 name[20];
++		char		 value[64];
++	}			 zos_global[9];
++	int			 nzos_global;
+ 	int			 pax_hdrcharset_utf8;
+ 	int64_t			 entry_bytes_remaining;
+ 	int64_t			 entry_offset;
+@@ -217,6 +226,10 @@ static int	checksum(struct archive_read *, const void *);
+ static int 	pax_attribute(struct archive_read *, struct tar *,
+ 		    struct archive_entry *, const char *key, size_t key_length,
+ 		    size_t value_length, int64_t *unconsumed);
++static int	pax_attribute_ZOS_supported(const char *, size_t);
++static int	tar_zos_global_set(struct archive_read *, struct tar *,
++		    const char *, size_t);
++static void	tar_apply_zos_global(struct tar *, struct archive_entry *);
+ static int	pax_attribute_LIBARCHIVE_xattr(struct archive_entry *,
+ 		    const char *, size_t, const char *, size_t);
+ static int	pax_attribute_SCHILY_acl(struct archive_read *, struct tar *,
+@@ -980,6 +993,8 @@ tar_read_header(struct archive_read *a, struct tar *tar,
+ 					return (ARCHIVE_WARN);
+ 				}
+ 			}
++			/* Apply ZOS.* defaults from the global header. */
++			tar_apply_zos_global(tar, entry);
+ 			return (err);
+ 		}
+ 
+@@ -2126,7 +2141,22 @@ header_pax_records(struct archive_read *a, struct tar *tar,
+ 		}
+ 
+ 		if (global) {
+-			if (pax_global_attribute_unsupported(attr_name.s,
++			if (pax_attribute_ZOS_supported(attr_name.s,
++			    archive_strlen(&attr_name))) {
++				/* ZOS.* records in a global header are defaults
++				 * for the following entries (IBM pax writes
++				 * the z/OS defaults and -o ZOS.* overrides
++				 * there).  Remember them; each entry that has
++				 * no per-file record gets the default. */
++				r = tar_zos_global_set(a, tar, attr_name.s,
++				    value_length - 1);
++				if (r < ARCHIVE_WARN) {
++					archive_string_free(&attr_name);
++					*unconsumed += ext_size + ext_padding;
++					return (r);
++				}
++				err = err_combine(err, r);
++			} else if (pax_global_attribute_unsupported(attr_name.s,
+ 				archive_strlen(&attr_name))) {
+ 				archive_set_error(&a->archive,
+ 				    ARCHIVE_ERRNO_FILE_FORMAT,
+@@ -2135,11 +2165,12 @@ header_pax_records(struct archive_read *a, struct tar *tar,
+ 				archive_string_free(&attr_name);
+ 				*unconsumed += ext_size + ext_padding;
+ 				return (ARCHIVE_FATAL);
++			} else {
++				/* Not an attribute we would have acted on, so
++					 * ignoring it here changes nothing. */
++				__archive_read_consume(a, value_length - 1);
++				r = ARCHIVE_OK;
+ 			}
+-			/* Not an attribute we would have acted on, so
+-			 * ignoring it here changes nothing. */
+-			__archive_read_consume(a, value_length - 1);
+-			r = ARCHIVE_OK;
+ 		} else {
+ 			/* pax_attribute will consume value_length - 1 */
+ 			r = pax_attribute(a, tar, entry, attr_name.s, archive_strlen(&attr_name), value_length - 1, unconsumed);
+@@ -2456,6 +2487,107 @@ pax_attribute_read_number(struct archive_read *a, size_t value_length, int64_t *
+ 	return (ARCHIVE_OK);
+ }
+ 
++/*
++ * z/OS pax (IBM pax) writes ZOS.* extended header keywords to preserve
++ * z/OS-specific file attributes.  These are the ones we know how to
++ * pass on to the caller (stored as entry extended attributes):
++ *   - IBM pax dialect: ZOS.taginfo, ZOS.useraudit, ZOS.auditoraudit,
++ *     ZOS.filefmt, ZOS.extattr, ZOS.acls
++ *   - zopen GNU tar dialect: ZOS.ccsid, ZOS.txtflag, ZOS.genvalue
++ */
++static int
++pax_attribute_ZOS_supported(const char *key, size_t key_length)
++{
++	if ((key_length == 11 && memcmp(key, "ZOS.taginfo", 11) == 0) ||
++	    (key_length == 13 && memcmp(key, "ZOS.useraudit", 13) == 0) ||
++	    (key_length == 16 && memcmp(key, "ZOS.auditoraudit", 16) == 0) ||
++	    (key_length == 11 && memcmp(key, "ZOS.filefmt", 11) == 0) ||
++	    (key_length == 11 && memcmp(key, "ZOS.extattr", 11) == 0) ||
++	    (key_length == 8 && memcmp(key, "ZOS.acls", 8) == 0) ||
++	    (key_length == 9 && memcmp(key, "ZOS.ccsid", 9) == 0) ||
++	    (key_length == 11 && memcmp(key, "ZOS.txtflag", 11) == 0) ||
++	    (key_length == 12 && memcmp(key, "ZOS.genvalue", 12) == 0))
++		return (1);
++	return (0);
++}
++
++/* Remember a ZOS.* record from a global (g) extended header: it is
++ * the default for every following entry that has no per-file record
++ * for the same keyword. */
++static int
++tar_zos_global_set(struct archive_read *a, struct tar *tar,
++    const char *key, size_t value_length)
++{
++	const char *p;
++	int i;
++
++	if (value_length == 0) {
++		/* Per POSIX, an empty value deletes the keyword: drop
++		 * the cached default so members stop inheriting it. */
++		for (i = 0; i < tar->nzos_global; i++)
++			if (strcmp(tar->zos_global[i].name, key) == 0) {
++				memmove(&tar->zos_global[i],
++				    &tar->zos_global[i + 1],
++				    (tar->nzos_global - i - 1) *
++				    sizeof(tar->zos_global[0]));
++				tar->nzos_global--;
++				break;
++			}
++		return (ARCHIVE_OK);
++	}
++	if (value_length >= sizeof(tar->zos_global[0].value)) {
++		/* Too long to keep; per-file records still apply. */
++		__archive_read_consume(a, value_length);
++		return (ARCHIVE_OK);
++	}
++	p = __archive_read_ahead(a, value_length, NULL);
++	if (p == NULL) {
++		archive_set_error(&a->archive, EINVAL,
++		    "Truncated archive detected while reading ZOS attribute");
++		return (ARCHIVE_FATAL);
++	}
++	for (i = 0; i < tar->nzos_global; i++)
++		if (strcmp(tar->zos_global[i].name, key) == 0)
++			break;
++	if (i < (int)(sizeof(tar->zos_global) / sizeof(tar->zos_global[0]))) {
++		snprintf(tar->zos_global[i].name,
++		    sizeof(tar->zos_global[i].name), "%s", key);
++		memcpy(tar->zos_global[i].value, p, value_length);
++		tar->zos_global[i].value[value_length] = '\0';
++		if (i == tar->nzos_global)
++			tar->nzos_global++;
++	}
++	__archive_read_consume(a, value_length);
++	return (ARCHIVE_OK);
++}
++
++/* Add the remembered global ZOS.* defaults to an entry, for keywords
++ * the entry's own extended header did not set. */
++static void
++tar_apply_zos_global(struct tar *tar, struct archive_entry *entry)
++{
++	int i, j;
++
++	for (i = 0; i < tar->nzos_global; i++) {
++		const char *name;
++		const void *value;
++		size_t size;
++
++		j = archive_entry_xattr_reset(entry);
++		while (j--) {
++			archive_entry_xattr_next(entry, &name, &value, &size);
++			if (name != NULL &&
++			    strcmp(name, tar->zos_global[i].name) == 0)
++				break;
++		}
++		if (j < 0)
++			archive_entry_xattr_add_entry(entry,
++			    tar->zos_global[i].name,
++			    tar->zos_global[i].value,
++			    strlen(tar->zos_global[i].value));
++	}
++}
++
+ /*
+  * Parse a single key=value attribute.
+  *
+@@ -3019,6 +3151,46 @@ pax_attribute(struct archive_read *a, struct tar *tar, struct archive_entry *ent
+ 			return (err);
+ 		}
+ 		break;
++	case 'Z':
++		/*
++		 * ZOS.* extensions written by IBM z/OS pax.  These
++		 * preserve z/OS-specific file attributes (file tag,
++		 * audit flags, file format, extattr bits, extended
++		 * ACLs).  Store the known ones on the entry as extended
++		 * attributes so the z/OS write_disk backend can restore
++		 * them; unknown ZOS.* keys are ignored.
++		 */
++		if (key_length > 4 && memcmp(key, "ZOS.", 4) == 0) {
++			if (pax_attribute_ZOS_supported(key, key_length)
++			    && value_length > 0) {
++				/* A zero-length value is skipped: the extractor
++				 * ignores it anyway, and storing it would
++				 * exercise a malloc(0) in
++				 * archive_entry_xattr_add_entry(). */
++				if (value_length > xattr_limit) {
++					archive_set_error(&a->archive,
++					    ARCHIVE_ERRNO_MISC,
++					    "Ignoring unreasonably large ZOS attribute:"
++					    " %llu > %llu",
++					    (unsigned long long)value_length,
++					    (unsigned long long)xattr_limit);
++					err = ARCHIVE_WARN;
++				} else {
++					p = __archive_read_ahead(a, value_length, NULL);
++					if (p == NULL) {
++						archive_set_error(&a->archive, EINVAL,
++							  "Truncated archive"
++							  " detected while reading ZOS attribute");
++						return (ARCHIVE_FATAL);
++					}
++					archive_entry_xattr_add_entry(entry, key,
++					    p, value_length);
++				}
++			}
++			__archive_read_consume(a, value_length);
++			return (err);
++		}
++		break;
+ 	}
+ 
+ 	/* Unrecognized key, just skip the entire value. */
 diff --git a/libarchive/archive_read_support_format_warc.c b/libarchive/archive_read_support_format_warc.c
 index 1e0053f..591bf66 100644
 --- a/libarchive/archive_read_support_format_warc.c
@@ -249,10 +485,10 @@ index 1e0053f..591bf66 100644
          return (timegm(t));
  #else
 diff --git a/libarchive/archive_read_support_format_xar.c b/libarchive/archive_read_support_format_xar.c
-index c5d377e..61bb7fb 100644
+index bb43d1f..6c25da4 100644
 --- a/libarchive/archive_read_support_format_xar.c
 +++ b/libarchive/archive_read_support_format_xar.c
-@@ -1128,9 +1128,34 @@ atohex(unsigned char *b, size_t bsize, const char *p, size_t psize)
+@@ -1136,9 +1136,34 @@ atohex(unsigned char *b, size_t bsize, const char *p, size_t psize)
  static time_t
  time_from_tm(struct tm *t)
  {
@@ -289,8 +525,90 @@ index c5d377e..61bb7fb 100644
          /* Use platform timegm() if available. */
          return (timegm(t));
  #else
+diff --git a/libarchive/archive_read_support_format_zip.c b/libarchive/archive_read_support_format_zip.c
+index 8e5566d..a235dd8 100644
+--- a/libarchive/archive_read_support_format_zip.c
++++ b/libarchive/archive_read_support_format_zip.c
+@@ -108,8 +108,9 @@ struct zip_entry {
+ 	uint16_t		zip_flags; /* From GP Flags Field */
+ 	unsigned char		compression;
+ 	unsigned char		system; /* From "version written by" */
+-	unsigned char		flags; /* Our extra markers. */
++	unsigned short		flags; /* Our extra markers. */
+ 	unsigned char		decdat;/* Used for Decryption check */
++	unsigned short		zos_ccsid;	/* From a "zs" extra field */
+ 
+ 	/* WinZip AES encryption extra field should be available
+ 	 * when compression is 99. */
+@@ -148,6 +149,7 @@ struct trad_enc_ctx {
+ #define LA_NTFS_MTIME (1 << 5)
+ #define LA_NTFS_ATIME (1 << 6)
+ #define LA_NTFS_BTIME (1 << 7)
++#define LA_ZOS_TAG (1 << 8)	/* z/OS "zs" tag extra field seen */
+ 
+ /*
+  * See "WinZip - AES Encryption Information"
+@@ -1205,6 +1207,26 @@ process_extra(struct archive_read *a, struct archive_entry *entry,
+ 			}
+ 			break;
+ 		}
++		case 0x737A:
++		{
++			/* zopen zip (z/OS) file tag extra field "zs":
++			 *   ccsid (2 bytes, little-endian) [flags (2 bytes)]
++			 * CCSID 0 = untagged, 65535 = binary; any other
++			 * CCSID means a text file (the companion unzip
++			 * derives txtflag the same way).  Remember it on
++			 * the zip_entry: process_extra() is also called
++			 * while slurping the central directory, where the
++			 * entry argument belongs to a different member;
++			 * the tag is attached to the right entry when
++			 * that member is returned.  A local header
++			 * occurrence overrides the central one. */
++			if (datasize >= 2) {
++				zip_entry->zos_ccsid =
++				    archive_le16dec(p + offset);
++				zip_entry->flags |= LA_ZOS_TAG;
++			}
++			break;
++		}
+ 		case 0x9901:
+ 			/* WinZip AES extra data field. */
+ 			if (datasize < 6) {
+@@ -1495,6 +1517,31 @@ zip_read_local_file_header(struct archive_read *a, struct archive_entry *entry,
+ 	archive_entry_set_mode(entry, zip_entry->mode);
+ 	archive_entry_set_uid(entry, zip_entry->uid);
+ 	archive_entry_set_gid(entry, zip_entry->gid);
++#ifdef __MVS__
++	/* Attach the z/OS file tag remembered from a "zs" extra
++	 * field (central or local header) as a ZOS.taginfo entry
++	 * attribute; the z/OS write_disk backend restores it. */
++	if (zip_entry->flags & LA_ZOS_TAG) {
++		char tag[16];
++		size_t len;
++
++		if (zip_entry->zos_ccsid > 0
++		    && zip_entry->zos_ccsid < 65535)
++			len = snprintf(tag, sizeof(tag), "1 %u",
++			    zip_entry->zos_ccsid);
++		else if (zip_entry->zos_ccsid == 65535)
++			/* Binary-tagged. */
++			len = snprintf(tag, sizeof(tag), "0 %u",
++			    zip_entry->zos_ccsid);
++		else
++			/* Explicitly untagged (the "zs" field is present
++			 * with CCSID 0); record it so the extractor can
++			 * clear any existing tag. */
++			len = snprintf(tag, sizeof(tag), "0");
++		archive_entry_xattr_add_entry(entry,
++		    "ZOS.taginfo", tag, len);
++	}
++#endif
+ 	archive_entry_set_mtime(entry, zip_entry->mtime, zip_entry->mtime_ns);
+ 	/* Without an extra field to supply them, leave atime and ctime
+ 	 * unset, rather than reporting them as set to the Unix epoch. */
 diff --git a/libarchive/archive_write.c b/libarchive/archive_write.c
-index fca2c18..8a021d0 100644
+index 0a72e16..b28e8e6 100644
 --- a/libarchive/archive_write.c
 +++ b/libarchive/archive_write.c
 @@ -389,7 +389,10 @@ archive_write_client_open(struct archive_write_filter *f)
@@ -306,10 +624,25 @@ index fca2c18..8a021d0 100644
  		free(client);
  		free(buffer);
 diff --git a/libarchive/archive_write_disk_posix.c b/libarchive/archive_write_disk_posix.c
-index 2923086..ab4b558 100644
+index e62da66..cafa07a 100644
 --- a/libarchive/archive_write_disk_posix.c
 +++ b/libarchive/archive_write_disk_posix.c
-@@ -415,6 +415,39 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
+@@ -210,6 +210,14 @@ struct fixup_entry {
+ #define	TODO_SGID		0x04000000
+ #define	TODO_SGID_CHECK		0x02000000
+ #define	TODO_APPLEDOUBLE	0x01000000
++#ifdef __MVS__
++/* Internal: restore z/OS file attributes.  Set for every entry
++ * (IBM pax restores tags by default); cleared by the
++ * metadata-suppression paths (existing dirs with NO_OVERWRITE,
++ * data-less hardlinks, skipped files), which also suppresses the
++ * ARCHIVE_EXTRACT_XATTR-gated audit/filefmt/extattr pass. */
++#define	TODO_ZOS_TAG		0x00800000
++#endif
+ #define	TODO_MODE		(TODO_MODE_BASE|TODO_SUID|TODO_SGID)
+ #define	TODO_TIMES		ARCHIVE_EXTRACT_TIME
+ #define	TODO_OWNER		ARCHIVE_EXTRACT_OWNER
+@@ -415,6 +423,362 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
  static ssize_t	_archive_write_disk_data_block(struct archive *, const void *,
  		    size_t, int64_t);
  
@@ -340,6 +673,329 @@ index 2923086..ab4b558 100644
 +#define	LA_S_ISREG(m)	S_ISREG(la_ae_mode_to_native(m))
 +#define	LA_S_ISDIR(m)	S_ISDIR(la_ae_mode_to_native(m))
 +#define	LA_S_ISLNK(m)	S_ISLNK(la_ae_mode_to_native(m))
++
++/*
++ * z/OS: restore the ZOS.* pax extended-header attributes that IBM
++ * z/OS pax stores in archives (ZOS.taginfo, ZOS.useraudit,
++ * ZOS.auditoraudit, ZOS.filefmt, ZOS.extattr).  The tar reader
++ * parks these on the entry as extended attributes; translate them
++ * into __chattr()/__fchattr() calls here so that extraction is
++ * equivalent to IBM "pax -r -p e".
++ */
++
++/* Map one ZOS.useraudit/ZOS.auditoraudit character to an audit byte:
++ * '-' = none, 's' = successes, 'f' = failures, 'a' = both.
++ * (Verified against z/OS: the audit area is 4 bytes, one each for
++ * read/write/execute, with values 0=none 1=success 2=failure 3=both.)
++ */
++static int
++zos_audit_char(char c)
++{
++	switch (c) {
++	case '-': return (0);
++	case 's': return (1);
++	case 'f': return (2);
++	case 'a': return (3);
++	default:  return (-1);
++	}
++}
++
++/* Apply one attrib_t to the file being extracted. */
++static int
++zos_chattr(struct archive_write_disk *a, attrib_t *at, const char *what)
++{
++	const char *name = (a->tmpname != NULL) ? a->tmpname : a->name;
++
++	if (a->fd >= 0 && __fchattr(a->fd, at, sizeof(*at)) == 0)
++		return (ARCHIVE_OK);
++	/* Some attributes (e.g. the program-control bit) cannot be
++	 * changed through the file descriptor; retry by pathname. */
++	if (a->fd < 0 || errno == EINVAL) {
++		if (__chattr(name, at, sizeof(*at)) == 0)
++			return (ARCHIVE_OK);
++	}
++	archive_set_error(&a->archive, errno,
++	    "Cannot restore z/OS %s attribute: %s", what, a->name);
++	return (ARCHIVE_WARN);
++}
++
++/* Apply user/auditor audit flags: three chars for read/write/execute. */
++static int
++zos_set_audit(struct archive_write_disk *a, int ret, int is_auditor,
++    const char *chars)
++{
++	attrib_t at;
++	int v[3], k;
++	unsigned char *b;
++
++	for (k = 0; k < 3; k++) {
++		v[k] = zos_audit_char(chars[k]);
++		if (v[k] < 0)
++			return (ret);
++	}
++	/* "---" (no audit flags) is a no-op, and IBM pax puts it in
++	 * the global header of every archive; setting auditor audit
++	 * flags requires auditor privilege even to clear them, so
++	 * skip the no-op rather than warn on every file. */
++	if (is_auditor && v[0] == 0 && v[1] == 0 && v[2] == 0)
++		return (ret);
++	memset(&at, 0, sizeof(at));
++	at.att_id[0] = 'A'; at.att_id[1] = 'T';
++	at.att_id[2] = 'T'; at.att_id[3] = ' ';
++	at.att_version = 1;
++	if (is_auditor) {
++		at.att_maaudit = 1;
++		b = (unsigned char *)&at.att_auditoraudit;
++	} else {
++		at.att_muaudit = 1;
++		b = (unsigned char *)&at.att_useraudit;
++	}
++	b[0] = (unsigned char)v[0];
++	b[1] = (unsigned char)v[1];
++	b[2] = (unsigned char)v[2];
++	{
++		int r2 = zos_chattr(a, &at, is_auditor ?
++		    "auditoraudit" : "useraudit");
++		if (r2 < ret) ret = r2;
++	}
++	return (ret);
++}
++
++/* Apply the extattr "apsl" flags (NUL-terminated 4-char string). */
++static int
++zos_set_extattr(struct archive_write_disk *a, const char *apsl)
++{
++	attrib_t at;
++
++	memset(&at, 0, sizeof(at));
++	at.att_id[0] = 'A'; at.att_id[1] = 'T';
++	at.att_id[2] = 'T'; at.att_id[3] = ' ';
++	at.att_version = 1;
++	at.att_setgen = 1;
++	/* On z/OS, only the program-control (p) and shared-address-space
++	 * (s) bits can be both set and cleared via __chattr().  The
++	 * APF-authorized bit (a) can only be set (clearing it fails with
++	 * EINVAL), and the shared-library-region bit (l) cannot be
++	 * changed through this interface at all; skip those positions
++	 * unless the archive asks for them to be set. */
++	if (apsl[0] == 'a') {
++		at.att_apfauthmask = 1;
++		at.att_apfauth = 1;
++	}
++	if (apsl[1] == 'p' || apsl[1] == '-') {
++		at.att_progctlmask = 1;
++		at.att_progctl = (apsl[1] == 'p');
++	}
++	if (apsl[2] == 's' || apsl[2] == '-') {
++		at.att_noshareasmask = 1;
++		/* 's' set = sharing allowed */
++		at.att_noshareas = (apsl[2] != 's');
++	}
++	if (!at.att_apfauthmask && !at.att_progctlmask
++	    && !at.att_noshareasmask)
++		return (ARCHIVE_OK);	/* Nothing we can change. */
++	return (zos_chattr(a, &at, "extattr"));
++}
++
++static int
++set_zos_attributes(struct archive_write_disk *a, int taginfo_only)
++{
++	struct archive_entry *entry = a->entry;
++	int ret = ARCHIVE_OK, r2;
++	int i = archive_entry_xattr_reset(entry);
++	int is_link = LA_S_ISLNK(a->mode);
++	int is_reg = LA_S_ISREG(a->mode);
++	/* IBM pax dialect (ZOS.taginfo, ZOS.useraudit,
++	 * ZOS.auditoraudit, ZOS.filefmt, ZOS.extattr) and zopen GNU
++	 * tar dialect (ZOS.ccsid, ZOS.txtflag, ZOS.genvalue), all
++	 * stored on the entry as extended attributes by the readers. */
++	const char *taginfo = NULL, *useraudit = NULL;
++	const char *auditoraudit = NULL, *filefmt = NULL, *extattr = NULL;
++	size_t taginfo_l = 0, useraudit_l = 0, auditoraudit_l = 0;
++	size_t filefmt_l = 0, extattr_l = 0;
++	long tarport_ccsid = -1, tarport_txtflag = -1, tarport_genvalue = -1;
++	char buf[64];
++
++	/* Collect the ZOS.* attribute values. */
++	while (i--) {
++		const char *name;
++		const void *value;
++		size_t size;
++
++		archive_entry_xattr_next(entry, &name, &value, &size);
++		if (name == NULL || value == NULL || size == 0
++		    || strncmp(name, "ZOS.", 4) != 0
++		    || size > sizeof(buf) - 1)
++			continue;
++		memcpy(buf, value, size);
++		buf[size] = '\0';
++
++		if (strcmp(name, "ZOS.taginfo") == 0) {
++			taginfo = value; taginfo_l = size;
++		} else if (strcmp(name, "ZOS.useraudit") == 0) {
++			useraudit = value; useraudit_l = size;
++		} else if (strcmp(name, "ZOS.auditoraudit") == 0) {
++			auditoraudit = value; auditoraudit_l = size;
++		} else if (strcmp(name, "ZOS.filefmt") == 0) {
++			filefmt = value; filefmt_l = size;
++		} else if (strcmp(name, "ZOS.extattr") == 0) {
++			extattr = value; extattr_l = size;
++		} else if (strcmp(name, "ZOS.ccsid") == 0) {
++			tarport_ccsid = atol(buf);
++		} else if (strcmp(name, "ZOS.txtflag") == 0) {
++			tarport_txtflag = atol(buf);
++		} else if (strcmp(name, "ZOS.genvalue") == 0) {
++			tarport_genvalue = atol(buf);
++		}
++		/* ZOS.acls: stored on the entry but not yet restored. */
++	}
++
++	/*
++	 * File tag.  z/OS cannot tag symlinks, and __chattr() with
++	 * att_filetagchg rejects directories (EINVAL), so only
++	 * regular files are tagged.
++	 */
++	if (!is_link && is_reg && taginfo_only) {
++		int txtflag = -1;
++		long ccsid = 0;
++
++		if (taginfo != NULL && taginfo_l < sizeof(buf)) {
++			/* "txtflag [ccsid]" (IBM pax) */
++			memcpy(buf, taginfo, taginfo_l);
++			buf[taginfo_l] = '\0';
++			txtflag = buf[0] - '0';
++			if (txtflag != 0 && txtflag != 1)
++				txtflag = -1;
++			else if (buf[1] == ' ')
++				ccsid = atol(buf + 2);
++			else if (buf[1] != '\0')
++				txtflag = -1;
++			/* "0" alone is valid: clear the tag. */
++		} else if (tarport_ccsid >= 0 || tarport_txtflag >= 0) {
++			/* Numeric ccsid/txtflag pair (zopen GNU tar) */
++			ccsid = (tarport_ccsid >= 0) ? tarport_ccsid : 0;
++			txtflag = (tarport_txtflag >= 0) ? tarport_txtflag : 0;
++		}
++		/* Untagged (txtflag 0, no ccsid): nothing to set.
++		 * Text files need a ccsid. */
++		if (txtflag == 1 && ccsid > 0 && ccsid <= 65535) {
++			attrib_t at;
++			memset(&at, 0, sizeof(at));
++			at.att_id[0] = 'A'; at.att_id[1] = 'T';
++			at.att_id[2] = 'T'; at.att_id[3] = ' ';
++			at.att_version = 1;
++			at.att_filetagchg = 1;
++			at.att_filetag.ft_ccsid = (unsigned short)ccsid;
++			at.att_filetag.ft_txtflag = 1;
++			r2 = zos_chattr(a, &at, "taginfo");
++			if (r2 < ret) ret = r2;
++		} else if (txtflag == 0 && ccsid >= 0 && ccsid <= 65535) {
++			/* Binary-tagged (e.g. CCSID 65535), or explicitly
++			 * untagged (CCSID 0): __chattr() with ccsid 0
++			 * clears any tag the destination file may have,
++			 * restoring the archived state. */
++			attrib_t at;
++			memset(&at, 0, sizeof(at));
++			at.att_id[0] = 'A'; at.att_id[1] = 'T';
++			at.att_id[2] = 'T'; at.att_id[3] = ' ';
++			at.att_version = 1;
++			at.att_filetagchg = 1;
++			at.att_filetag.ft_ccsid = (unsigned short)ccsid;
++			at.att_filetag.ft_txtflag = 0;
++			r2 = zos_chattr(a, &at, "taginfo");
++			if (r2 < ret) ret = r2;
++		}
++	}
++
++	/* Everything below is only restored with ARCHIVE_EXTRACT_XATTR
++	 * (IBM pax "-p e"). */
++	if (taginfo_only)
++		return (ret);
++
++	/* User/auditor audit flags: three chars (read/write/execute). */
++	if (!is_link && useraudit != NULL && useraudit_l == 3)
++		ret = zos_set_audit(a, ret, 0, useraudit);
++	if (!is_link && auditoraudit != NULL && auditoraudit_l == 3)
++		ret = zos_set_audit(a, ret, 1, auditoraudit);
++
++	/* Text file format. */
++	if (!is_link && is_reg && filefmt != NULL) {
++		int fmt;
++		char fbuf[8];
++
++		if (filefmt_l >= sizeof(fbuf))
++			filefmt = NULL;
++		else {
++			memcpy(fbuf, filefmt, filefmt_l);
++			fbuf[filefmt_l] = '\0';
++			if (strcmp(fbuf, "not") == 0)
++				fmt = S_FFNA;
++			else if (strcmp(fbuf, "bin") == 0)
++				fmt = S_FFBINARY;
++			else if (strcmp(fbuf, "nl") == 0)
++				fmt = S_FFNL;
++			else if (strcmp(fbuf, "cr") == 0)
++				fmt = S_FFCR;
++			else if (strcmp(fbuf, "lf") == 0)
++				fmt = S_FFLF;
++			else if (strcmp(fbuf, "crlf") == 0)
++				fmt = S_FFCRLF;
++			else if (strcmp(fbuf, "lfcr") == 0)
++				fmt = S_FFLFCR;
++			else if (strcmp(fbuf, "crnl") == 0)
++				fmt = S_FFCRNL;
++#ifdef S_FFRECORD
++			else if (strcmp(fbuf, "rec") == 0)
++				fmt = S_FFRECORD;
++#endif
++			else
++				fmt = -1;
++			if (fmt >= 0) {
++				attrib_t at;
++				memset(&at, 0, sizeof(at));
++				at.att_id[0] = 'A'; at.att_id[1] = 'T';
++				at.att_id[2] = 'T'; at.att_id[3] = ' ';
++				at.att_version = 1;
++				at.att_filefmtchg = 1;
++				at.att_filefmt = (char)fmt;
++				r2 = zos_chattr(a, &at, "filefmt");
++				if (r2 < ret) ret = r2;
++			}
++		}
++	}
++
++	/* Extended attributes: 4 chars "apsl" ('-' = not set):
++	 *   a = APF-authorized, p = program controlled,
++	 *   s = shared address space, l = shared library. */
++	if (!is_link && is_reg) {
++		char ebuf[8];
++
++		if (extattr != NULL && extattr_l == 4) {
++			memcpy(ebuf, extattr, 4);
++			ebuf[4] = '\0';
++			r2 = zos_set_extattr(a, ebuf);
++			if (r2 < ret) ret = r2;
++		} else if (tarport_genvalue >= 0) {
++			/* ZOS.genvalue is present: apply the apsl bits
++			 * even when they are all zero, so that bits set
++			 * on the destination (e.g. an existing
++			 * __ST_NO_SHAREAS) are cleared to restore the
++			 * archived state. */
++			snprintf(ebuf, sizeof(ebuf), "%c%c%c%c",
++			    (tarport_genvalue & __ST_APF_AUTH) ? 'a' : '-',
++			    (tarport_genvalue & __ST_PROG_CTL) ? 'p' : '-',
++			    (tarport_genvalue & __ST_NO_SHAREAS) ? '-' : 's',
++#ifdef __ST_SHARE_LIB
++			    (tarport_genvalue & __ST_SHARE_LIB) ? 'l' : '-');
++#else
++			    '-');
++#endif
++			r2 = zos_set_extattr(a, ebuf);
++			if (r2 < ret) ret = r2;
++		}
++	}
++	return (ret);
++}
 +#else
 +#define	LA_S_ISREG(m)	S_ISREG(m)
 +#define	LA_S_ISDIR(m)	S_ISDIR(m)
@@ -349,7 +1005,55 @@ index 2923086..ab4b558 100644
  static int
  la_mktemp(struct archive_write_disk *a)
  {
-@@ -2098,7 +2131,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -795,6 +1159,12 @@ _archive_write_disk_header(struct archive *_a, struct archive_entry *entry)
+ #endif
+ 		a->todo |= TODO_XATTR;
+ 	}
++#ifdef __MVS__
++	/* The z/OS file tag is basic file metadata (IBM pax restores
++	 * it by default), so it is always restored; the suppression
++	 * paths that clear a->todo clear this as well. */
++	a->todo |= TODO_ZOS_TAG;
++#endif
+ 	if (a->flags & ARCHIVE_EXTRACT_FFLAGS)
+ 		a->todo |= TODO_FFLAGS;
+ 	if (a->flags & ARCHIVE_EXTRACT_SECURE_SYMLINKS) {
+@@ -1879,6 +2249,34 @@ _archive_write_disk_finish_entry(struct archive *_a)
+ 		if (r2 < ret) ret = r2;
+ 	}
+ 
++#ifdef __MVS__
++	/*
++	 * Restore the z/OS file tag (ZOS.taginfo).  IBM pax stores
++	 * tags for every tagged file on write and restores them by
++	 * default on read (no -p option needed), so treat the tag
++	 * as basic file metadata rather than an extended attribute.
++	 * This must happen before timestamps are restored, since
++	 * __chattr() updates the ctime.  TODO_ZOS_TAG is cleared by
++	 * the metadata-suppression paths (existing directories with
++	 * NO_OVERWRITE, data-less hardlinks). */
++	if (a->todo & TODO_ZOS_TAG) {
++		int r2 = set_zos_attributes(a, 1);
++		if (r2 < ret) ret = r2;
++	}
++	/*
++	 * Restore the remaining z/OS pax attributes (audit flags,
++	 * file format, extattr bits).  Like other extended
++	 * attributes, these are only restored when the caller
++	 * requested ARCHIVE_EXTRACT_XATTR (IBM pax equivalent:
++	 * "pax -r -p e"); TODO_ZOS_TAG also guards against
++	 * restoring them on suppressed (skipped) entries.
++	 */
++	if ((a->todo & TODO_XATTR) && (a->todo & TODO_ZOS_TAG)) {
++		int r2 = set_zos_attributes(a, 0);
++		if (r2 < ret) ret = r2;
++	}
++#endif
++
+ 	/*
+ 	 * Some flags prevent file modification; they must be restored after
+ 	 * file contents are written.
+@@ -2098,7 +2496,7 @@ restore_entry(struct archive_write_disk *a)
  {
  	int ret = ARCHIVE_OK, en;
  
@@ -358,7 +1062,7 @@ index 2923086..ab4b558 100644
  		/*
  		 * TODO: Fix this.  Apparently, there are platforms
  		 * that still allow root to hose the entire filesystem
-@@ -2146,7 +2179,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2146,10 +2544,16 @@ restore_entry(struct archive_write_disk *a)
  	if ((en == EISDIR || en == EEXIST)
  	    && (a->flags & ARCHIVE_EXTRACT_NO_OVERWRITE)) {
  		/* If we're not overwriting, we're done. */
@@ -367,7 +1071,16 @@ index 2923086..ab4b558 100644
  			/* Don't overwrite any settings on existing directories. */
  			a->todo = 0;
  		}
-@@ -2182,13 +2215,13 @@ restore_entry(struct archive_write_disk *a)
++#ifdef __MVS__
++		/* Nor may an existing, non-overwritten file have its
++			 * z/OS attributes (tag, and with ARCHIVE_EXTRACT_XATTR
++			 * the audit/filefmt/extattr bits) changed. */
++		a->todo &= ~TODO_ZOS_TAG;
++#endif
+ 		archive_entry_unset_size(a->entry);
+ 		return (ARCHIVE_OK);
+ 	}
+@@ -2182,13 +2586,13 @@ restore_entry(struct archive_write_disk *a)
  		 * symlink to a dir if the client wants that.  So
  		 * follow the symlink if we're creating a dir.
  		 */
@@ -383,7 +1096,18 @@ index 2923086..ab4b558 100644
  #ifdef HAVE_LSTAT
  			r = lstat(a->name, &a->st);
  #else
-@@ -2225,7 +2258,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2206,6 +2610,10 @@ restore_entry(struct archive_write_disk *a)
+ 		if ((a->flags & ARCHIVE_EXTRACT_NO_OVERWRITE_NEWER)
+ 		    &&  !S_ISDIR(a->st.st_mode)) {
+ 			if (!older(&(a->st), a->entry)) {
++#ifdef __MVS__
++				/* Skipped: leave z/OS attributes alone. */
++				a->todo &= ~TODO_ZOS_TAG;
++#endif
+ 				archive_entry_unset_size(a->entry);
+ 				return (ARCHIVE_OK);
+ 			}
+@@ -2225,7 +2633,7 @@ restore_entry(struct archive_write_disk *a)
  				(void)clear_nochange_fflags(a);
  
  			if ((a->flags & ARCHIVE_EXTRACT_SAFE_WRITES) &&
@@ -392,7 +1116,7 @@ index 2923086..ab4b558 100644
  				/* Use a temporary file to extract */
  				if ((a->fd = la_mktemp(a)) == -1) {
  					archive_set_error(&a->archive, errno,
-@@ -2246,7 +2279,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2246,7 +2654,7 @@ restore_entry(struct archive_write_disk *a)
  				/* Try again. */
  				en = create_filesystem_object(a);
  			}
@@ -401,7 +1125,7 @@ index 2923086..ab4b558 100644
  			/* A dir is in the way of a non-dir, rmdir it. */
  			if (a->flags & ARCHIVE_EXTRACT_CLEAR_NOCHANGE_FFLAGS)
  				(void)clear_nochange_fflags(a);
-@@ -3528,7 +3561,7 @@ set_ownership(struct archive_write_disk *a)
+@@ -3528,7 +3936,7 @@ set_ownership(struct archive_write_disk *a)
  		return (ARCHIVE_OK);
  	}
  #elif HAVE_CHOWN
@@ -410,7 +1134,7 @@ index 2923086..ab4b558 100644
  		/* We've set owner and know uid/gid are correct. */
  		a->todo &= ~(TODO_OWNER | TODO_SGID_CHECK | TODO_SUID_CHECK);
  		return (ARCHIVE_OK);
-@@ -3566,6 +3599,26 @@ set_time(int fd, int mode, const char *name,
+@@ -3566,6 +3974,26 @@ set_time(int fd, int mode, const char *name,
  		return futimens(fd, ts);
  	return utimensat(AT_FDCWD, name, ts, AT_SYMLINK_NOFOLLOW);
  
@@ -437,7 +1161,7 @@ index 2923086..ab4b558 100644
  #elif HAVE_UTIMES
  	/*
  	 * The utimes()-family functions support µs-resolution and
-@@ -3743,7 +3796,12 @@ set_times_from_entry(struct archive_write_disk *a)
+@@ -3743,7 +4171,12 @@ set_times_from_entry(struct archive_write_disk *a)
  		ctime_nsec = archive_entry_ctime_nsec(a->entry);
  	}
  
@@ -451,7 +1175,7 @@ index 2923086..ab4b558 100644
  			 atime, atime_nsec,
  			 birthtime, birthtime_nsec,
  			 mtime, mtime_nsec,
-@@ -3810,7 +3868,7 @@ set_mode(struct archive_write_disk *a, int mode)
+@@ -3810,7 +4243,7 @@ set_mode(struct archive_write_disk *a, int mode)
  		a->todo &= ~TODO_SUID_CHECK;
  	}
  
@@ -460,7 +1184,7 @@ index 2923086..ab4b558 100644
  #ifdef HAVE_LCHMOD
  		/*
  		 * If this is a symlink, use lchmod().  If the
-@@ -3841,7 +3899,7 @@ set_mode(struct archive_write_disk *a, int mode)
+@@ -3841,7 +4274,7 @@ set_mode(struct archive_write_disk *a, int mode)
  			}
  		}
  #endif
@@ -469,8 +1193,70 @@ index 2923086..ab4b558 100644
  		/*
  		 * If it's not a symlink and not a dir, then use
  		 * fchmod() or chmod(), depending on whether we have
+@@ -4540,6 +4973,11 @@ set_xattrs(struct archive_write_disk *a)
+ 
+ 		if (name == NULL)
+ 			continue;
++		/* z/OS pax attributes (ZOS.*): only meaningful on z/OS,
++		 * where they are restored by set_zos_attributes(); quietly
++		 * skip them here instead of failing to set them. */
++		if (strncmp(name, "ZOS.", 4) == 0)
++			continue;
+ #if ARCHIVE_XATTR_LINUX
+ 		/* Linux: quietly skip POSIX.1e ACL extended attributes */
+ 		if (strncmp(name, "system.", 7) == 0 &&
+@@ -4629,6 +5067,11 @@ set_xattrs(struct archive_write_disk *a)
+ 			int e;
+ 			int namespace;
+ 
++			/* z/OS pax attributes (ZOS.*): only meaningful on
++			 * z/OS; quietly skip them here. */
++			if (strncmp(name, "ZOS.", 4) == 0)
++				continue;
++
+ 			namespace = EXTATTR_NAMESPACE_USER;
+ 
+ 			if (strncmp(name, "user.", 5) == 0) {
+@@ -4714,15 +5157,29 @@ set_xattrs(struct archive_write_disk *a)
+ static int
+ set_xattrs(struct archive_write_disk *a)
+ {
+-	/* If there aren't any extended attributes, then it's okay not
+-	 * to extract them, otherwise, issue a single warning. */
+-	if (archive_entry_xattr_count(a->entry) != 0 && !a->warning_done) {
+-		a->warning_done = 1;
+-		archive_set_error(&a->archive, ARCHIVE_ERRNO_FILE_FORMAT,
+-		    "Cannot restore extended attributes on this system");
+-		return (ARCHIVE_WARN);
++	/* z/OS pax attributes (ZOS.*) are only meaningful on z/OS, where
++	 * they are restored by set_zos_attributes(); on all platforms,
++	 * quietly skip them here and only warn about other extended
++	 * attributes that cannot be restored. */
++	int i = archive_entry_xattr_reset(a->entry);
++	while (i--) {
++		const char *name;
++		const void *value;
++		size_t size;
++
++		archive_entry_xattr_next(a->entry, &name, &value, &size);
++		if (name != NULL && strncmp(name, "ZOS.", 4) != 0) {
++			/* An extended attribute we cannot set. */
++			if (!a->warning_done) {
++				a->warning_done = 1;
++				archive_set_error(&a->archive,
++				    ARCHIVE_ERRNO_FILE_FORMAT,
++				    "Cannot restore extended attributes on this system");
++				return (ARCHIVE_WARN);
++			}
++			return (ARCHIVE_OK);
++		}
+ 	}
+-	/* Warning was already emitted; suppress further warnings. */
+ 	return (ARCHIVE_OK);
+ }
+ #endif
 diff --git a/libarchive/archive_write_set_format_iso9660.c b/libarchive/archive_write_set_format_iso9660.c
-index d3f7398..fd84113 100644
+index 1e29f56..2092012 100644
 --- a/libarchive/archive_write_set_format_iso9660.c
 +++ b/libarchive/archive_write_set_format_iso9660.c
 @@ -2495,16 +2495,58 @@ set_digit(unsigned char *p, size_t s, int value)
