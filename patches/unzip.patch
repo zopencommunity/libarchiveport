@@ -1,8 +1,76 @@
 diff --git a/unzip/bsdunzip.c b/unzip/bsdunzip.c
-index e6426d5..8bfc3f4 100644
+index 682900e..e538403 100644
 --- a/unzip/bsdunzip.c
 +++ b/unzip/bsdunzip.c
-@@ -842,7 +842,7 @@ extract(struct archive *a, struct archive_entry *e)
+@@ -653,6 +653,55 @@ extract2fd(struct archive *a, char *pathname, int fd)
+ /*
+  * Extract a regular file.
+  */
++/*
++ * Restore the z/OS file tag recorded by the zip reader from the
++ * "zs" extra field (stored on the entry as a ZOS.taginfo extended
++ * attribute): "1 <ccsid>" (text), "0 <ccsid>" (binary), "0"
++ * (untagged).
++ */
++#ifdef __MVS__
++static void
++set_zos_tag(struct archive_entry *e, int fd, const char *path)
++{
++	attrib_t at;
++	char buf[33];
++	const char *name;
++	const void *value;
++	size_t size;
++	long ccsid = 0;
++	int i = archive_entry_xattr_reset(e);
++	int txtflag;
++
++	while (i--) {
++		archive_entry_xattr_next(e, &name, &value, &size);
++		if (name != NULL && strcmp(name, "ZOS.taginfo") == 0)
++			break;
++	}
++	if (i < 0 || size < 1 || size > sizeof(buf) - 1)
++		return;
++	memcpy(buf, value, size);
++	buf[size] = '\0';
++	txtflag = buf[0] - '0';
++	if (txtflag != 0 && txtflag != 1)
++		return;
++	if (buf[1] == ' ')
++		ccsid = atol(buf + 2);
++	else if (buf[1] != '\0')
++		return;
++	if (ccsid < 0 || ccsid > 65535)
++		return;
++	memset(&at, 0, sizeof(at));
++	at.att_id[0] = 'A'; at.att_id[1] = 'T';
++	at.att_id[2] = 'T'; at.att_id[3] = ' ';
++	at.att_version = 1;
++	at.att_filetagchg = 1;
++	at.att_filetag.ft_ccsid = (unsigned short)ccsid;
++	at.att_filetag.ft_txtflag = txtflag;
++	if (__fchattr(fd, &at, sizeof(at)) != 0)
++		warning("Cannot set file tag for '%s'", path);
++}
++#endif
++
+ static void
+ extract_file(struct archive *a, struct archive_entry *e, char **path)
+ {
+@@ -763,6 +812,11 @@ recheck:
+ 
+ 	text = extract2fd(a, *path, fd);
+ 
++#ifdef __MVS__
++	/* Restore the z/OS file tag from the "zs" extra field. */
++	set_zos_tag(e, fd, *path);
++#endif
++
+ 	if (tty)
+ 		info("  \b\b");
+ 	if (text)
+@@ -851,7 +905,7 @@ extract(struct archive *a, struct archive_entry *e)
  		return;
  	}
  
@@ -11,7 +79,7 @@ index e6426d5..8bfc3f4 100644
  	    ((linktarget = archive_entry_symlink(e)) != NULL) &&
  	    pathname_is_insecure(linktarget)) {
  		warningx("skipping insecure symlink '%s' to '%s'", pathname, linktarget);
-@@ -852,7 +852,8 @@ extract(struct archive *a, struct archive_entry *e)
+@@ -861,7 +915,8 @@ extract(struct archive *a, struct archive_entry *e)
  	}
  
  	/* I don't think this can happen in a zipfile.. */
@@ -21,7 +89,7 @@ index e6426d5..8bfc3f4 100644
  		warningx("skipping non-regular entry '%s'", pathname);
  		ac(archive_read_data_skip(a));
  		free(pathname);
-@@ -860,7 +861,7 @@ extract(struct archive *a, struct archive_entry *e)
+@@ -869,7 +924,7 @@ extract(struct archive *a, struct archive_entry *e)
  	}
  
  	/* skip directories in -j case */
@@ -30,7 +98,7 @@ index e6426d5..8bfc3f4 100644
  		ac(archive_read_data_skip(a));
  		free(pathname);
  		return;
-@@ -886,7 +887,7 @@ extract(struct archive *a, struct archive_entry *e)
+@@ -895,7 +950,7 @@ extract(struct archive *a, struct archive_entry *e)
  	/* ensure that parent directory exists */
  	make_parent(realpathname);
  
@@ -39,7 +107,7 @@ index e6426d5..8bfc3f4 100644
  		extract_dir(a, e, realpathname);
  	else
  		extract_file(a, e, &realpathname);
-@@ -909,7 +910,8 @@ extract_stdout(struct archive *a, struct archive_entry *e)
+@@ -918,7 +973,8 @@ extract_stdout(struct archive *a, struct archive_entry *e)
  	filetype = archive_entry_filetype(e);
  
  	/* I don't think this can happen in a zipfile.. */
@@ -49,7 +117,7 @@ index e6426d5..8bfc3f4 100644
  		warningx("skipping non-regular entry '%s'", pathname);
  		ac(archive_read_data_skip(a));
  		free(pathname);
-@@ -917,7 +919,7 @@ extract_stdout(struct archive *a, struct archive_entry *e)
+@@ -926,7 +982,7 @@ extract_stdout(struct archive *a, struct archive_entry *e)
  	}
  
  	/* skip directories in -j case */
@@ -58,7 +126,7 @@ index e6426d5..8bfc3f4 100644
  		ac(archive_read_data_skip(a));
  		free(pathname);
  		return;
-@@ -989,7 +991,7 @@ test(struct archive *a, struct archive_entry *e)
+@@ -998,7 +1054,7 @@ test(struct archive *a, struct archive_entry *e)
  	int error_count;
  
  	error_count = 0;

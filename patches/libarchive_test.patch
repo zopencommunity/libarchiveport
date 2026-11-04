@@ -62,7 +62,7 @@ index 35af458..3e1f517 100644
  	assert((pst = archive_entry_stat(e)) != NULL);
  	if (pst == NULL)
 diff --git a/libarchive/test/test_open_filename.c b/libarchive/test/test_open_filename.c
-index 41e0ff0..97f2f68 100644
+index f8a1565..f4f6348 100644
 --- a/libarchive/test/test_open_filename.c
 +++ b/libarchive/test/test_open_filename.c
 @@ -81,14 +81,15 @@ test_open_filename_mbs(void)
