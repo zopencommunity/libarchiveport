@@ -1,15 +1,3 @@
-diff --git a/Makefile.am b/Makefile.am
-index c171c24..c4dfe7d 100644
---- a/Makefile.am
-+++ b/Makefile.am
-@@ -484,6 +484,7 @@ libarchive_test_SOURCES= \
- 	libarchive/test/test_read_filter_compress.c \
- 	libarchive/test/test_read_filter_grzip.c \
- 	libarchive/test/test_read_filter_gzip_recursive.c \
-+	libarchive/test/test_read_filter_gzip_trailer.c \
- 	libarchive/test/test_read_filter_lrzip.c \
- 	libarchive/test/test_read_filter_lz4_raw.c \
- 	libarchive/test/test_read_filter_lzop.c \
 diff --git a/libarchive/test/CMakeLists.txt b/libarchive/test/CMakeLists.txt
 index aae6c4c..ecb9302 100644
 --- a/libarchive/test/CMakeLists.txt
@@ -198,10 +186,10 @@ index 5688982..81befa8 100644
  	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
 diff --git a/libarchive/test/test_read_filter_gzip_trailer.c b/libarchive/test/test_read_filter_gzip_trailer.c
 new file mode 100644
-index 0000000..c1bc7d2
+index 0000000..e9bc8a1
 --- /dev/null
 +++ b/libarchive/test/test_read_filter_gzip_trailer.c
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,156 @@
 +/*-
 + * Copyright (c) 2026 Corey Daley
 + * All rights reserved.
@@ -319,6 +307,19 @@ index 0000000..c1bc7d2
 +	memcpy(twice + used, buff, used);
 +	assertEqualInt(ARCHIVE_OK, read_all(twice, 2 * used, &total, errbuf));
 +	assertEqualInt(2 * DATA_SIZE, total);
++
++	/* Zero padding between members is also accepted (gzip(1) skips
++	 * it), the second member is still read, and its damaged trailer
++	 * is still rejected. */
++	memset(twice + used, 0, 16);
++	memcpy(twice + used + 16, buff, used);
++	assertEqualInt(ARCHIVE_OK,
++	    read_all(twice, used + 16 + used, &total, errbuf));
++	assertEqualInt(2 * DATA_SIZE, total);
++	twice[used + 16 + used - 8] ^= 0x01;
++	assertEqualInt(ARCHIVE_FATAL,
++	    read_all(twice, used + 16 + used, &total, errbuf));
++	assertEqualString("Gzip: CRC32 error", errbuf);
 +
 +	/* A changed byte in the middle of the data inflates without complaint;
 +	 * only the CRC catches it. */
