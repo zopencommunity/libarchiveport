@@ -180,7 +180,7 @@ index 97c944b..5a06562 100644
  		archive_set_error(a, ENOMEM, "No memory");
  		free(mine);
 diff --git a/libarchive/archive_read_support_filter_gzip.c b/libarchive/archive_read_support_filter_gzip.c
-index a4dff54..2935a58 100644
+index a4dff54..7c3fb68 100644
 --- a/libarchive/archive_read_support_filter_gzip.c
 +++ b/libarchive/archive_read_support_filter_gzip.c
 @@ -57,6 +57,7 @@ struct gzip {
@@ -240,7 +240,7 @@ index a4dff54..2935a58 100644
  
  	/* We've verified the trailer, so consume it now. */
  	__archive_read_filter_consume(f->upstream, 8);
-@@ -435,8 +462,9 @@ static ssize_t
+@@ -435,16 +462,18 @@ static ssize_t
  gzip_filter_read(struct archive_read_filter *f, const void **p)
  {
  	struct gzip *gzip = f->data;
@@ -249,9 +249,19 @@ index a4dff54..2935a58 100644
  	ssize_t avail_in, max_in;
 +	unsigned char *out;
  	int ret;
++	int member_done = 0;
  
  	/* Empty our output buffer. */
-@@ -477,7 +505,14 @@ gzip_filter_read(struct archive_read_filter *f, const void **p)
+ 	gzip->stream.next_out = gzip->out_block;
+ 	gzip->stream.avail_out = (uInt)gzip->out_block_size;
+ 
+ 	/* Try to fill the output buffer. */
+-	while (gzip->stream.avail_out > 0 && !gzip->eof) {
++	while (gzip->stream.avail_out > 0 && !gzip->eof && !member_done) {
+ 		/* If we're not in a stream, read a header
+ 		 * and initialize the decompression library. */
+ 		if (!gzip->in_stream) {
+@@ -477,7 +506,14 @@ gzip_filter_read(struct archive_read_filter *f, const void **p)
  		gzip->stream.avail_in = (uInt)avail_in;
  
  		/* Decompress and consume some of that data. */
@@ -266,6 +276,23 @@ index a4dff54..2935a58 100644
  		switch (ret) {
  		case Z_OK: /* Decompressor made some progress. */
  			__archive_read_filter_consume(f->upstream,
+@@ -491,6 +527,16 @@ gzip_filter_read(struct archive_read_filter *f, const void **p)
+ 			ret = consume_trailer(f);
+ 			if (ret < ARCHIVE_OK)
+ 				return (ret);
++			/* Serve this member's decompressed data before
++			 * probing for the next member: the padding skip
++			 * and the header lookahead can block on
++			 * non-seekable input (pipes), and the consumer
++			 * must not wait for data that is already
++			 * available.  An empty member (no data produced)
++			 * keeps looping, since returning zero would
++			 * report EOF. */
++			if (gzip->stream.next_out > gzip->out_block)
++				member_done = 1;
+ 			break;
+ 		default:
+ 			/* Return an error. */
 diff --git a/libarchive/archive_read_support_format_iso9660.c b/libarchive/archive_read_support_format_iso9660.c
 index 2d95457..1866e38 100644
 --- a/libarchive/archive_read_support_format_iso9660.c
@@ -724,7 +751,7 @@ index 0a72e16..b28e8e6 100644
  		free(client);
  		free(buffer);
 diff --git a/libarchive/archive_write_disk_posix.c b/libarchive/archive_write_disk_posix.c
-index e62da66..3ff096e 100644
+index e62da66..e689c34 100644
 --- a/libarchive/archive_write_disk_posix.c
 +++ b/libarchive/archive_write_disk_posix.c
 @@ -210,6 +210,14 @@ struct fixup_entry {
@@ -742,7 +769,7 @@ index e62da66..3ff096e 100644
  #define	TODO_MODE		(TODO_MODE_BASE|TODO_SUID|TODO_SGID)
  #define	TODO_TIMES		ARCHIVE_EXTRACT_TIME
  #define	TODO_OWNER		ARCHIVE_EXTRACT_OWNER
-@@ -415,6 +423,391 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
+@@ -415,6 +423,395 @@ static ssize_t	_archive_write_disk_data(struct archive *, const void *,
  static ssize_t	_archive_write_disk_data_block(struct archive *, const void *,
  		    size_t, int64_t);
  
@@ -1113,6 +1140,14 @@ index e62da66..3ff096e 100644
 +
 +	if (!(a->flags & ARCHIVE_EXTRACT_SAFE_WRITES))
 +		return (0);
++	/* Keep the existing entry so the create fails with EEXIST and
++	 * the regular NO_OVERWRITE / NO_OVERWRITE_NEWER logic runs;
++	 * this must come first so those protections also apply to a
++	 * destination that happens to be the archive being read. */
++	if (a->flags & (ARCHIVE_EXTRACT_NO_OVERWRITE |
++	    ARCHIVE_EXTRACT_NO_OVERWRITE_NEWER))
++		return (0);
++#ifdef HAVE_LSTAT
 +	if (lstat(a->name, &st) == 0) {
 +		if (a->skip_file_set &&
 +		    st.st_dev == (dev_t)a->skip_file_dev &&
@@ -1122,11 +1157,7 @@ index e62da66..3ff096e 100644
 +			return (EIO);
 +		}
 +	}
-+	/* Keep the existing entry so the create fails with EEXIST and
-+	 * the regular NO_OVERWRITE / NO_OVERWRITE_NEWER logic runs. */
-+	if (a->flags & (ARCHIVE_EXTRACT_NO_OVERWRITE |
-+	    ARCHIVE_EXTRACT_NO_OVERWRITE_NEWER))
-+		return (0);
++#endif
 +	(void)unlink(a->name);
 +	return (0);
 +}
@@ -1134,7 +1165,7 @@ index e62da66..3ff096e 100644
  static int
  la_mktemp(struct archive_write_disk *a)
  {
-@@ -795,6 +1188,12 @@ _archive_write_disk_header(struct archive *_a, struct archive_entry *entry)
+@@ -795,6 +1192,12 @@ _archive_write_disk_header(struct archive *_a, struct archive_entry *entry)
  #endif
  		a->todo |= TODO_XATTR;
  	}
@@ -1147,7 +1178,7 @@ index e62da66..3ff096e 100644
  	if (a->flags & ARCHIVE_EXTRACT_FFLAGS)
  		a->todo |= TODO_FFLAGS;
  	if (a->flags & ARCHIVE_EXTRACT_SECURE_SYMLINKS) {
-@@ -1879,6 +2278,34 @@ _archive_write_disk_finish_entry(struct archive *_a)
+@@ -1879,6 +2282,34 @@ _archive_write_disk_finish_entry(struct archive *_a)
  		if (r2 < ret) ret = r2;
  	}
  
@@ -1182,7 +1213,7 @@ index e62da66..3ff096e 100644
  	/*
  	 * Some flags prevent file modification; they must be restored after
  	 * file contents are written.
-@@ -2098,7 +2525,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2098,7 +2529,7 @@ restore_entry(struct archive_write_disk *a)
  {
  	int ret = ARCHIVE_OK, en;
  
@@ -1191,7 +1222,7 @@ index e62da66..3ff096e 100644
  		/*
  		 * TODO: Fix this.  Apparently, there are platforms
  		 * that still allow root to hose the entire filesystem
-@@ -2146,10 +2573,16 @@ restore_entry(struct archive_write_disk *a)
+@@ -2146,10 +2577,16 @@ restore_entry(struct archive_write_disk *a)
  	if ((en == EISDIR || en == EEXIST)
  	    && (a->flags & ARCHIVE_EXTRACT_NO_OVERWRITE)) {
  		/* If we're not overwriting, we're done. */
@@ -1209,7 +1240,7 @@ index e62da66..3ff096e 100644
  		archive_entry_unset_size(a->entry);
  		return (ARCHIVE_OK);
  	}
-@@ -2182,13 +2615,13 @@ restore_entry(struct archive_write_disk *a)
+@@ -2182,13 +2619,13 @@ restore_entry(struct archive_write_disk *a)
  		 * symlink to a dir if the client wants that.  So
  		 * follow the symlink if we're creating a dir.
  		 */
@@ -1225,7 +1256,7 @@ index e62da66..3ff096e 100644
  #ifdef HAVE_LSTAT
  			r = lstat(a->name, &a->st);
  #else
-@@ -2206,6 +2639,10 @@ restore_entry(struct archive_write_disk *a)
+@@ -2206,6 +2643,10 @@ restore_entry(struct archive_write_disk *a)
  		if ((a->flags & ARCHIVE_EXTRACT_NO_OVERWRITE_NEWER)
  		    &&  !S_ISDIR(a->st.st_mode)) {
  			if (!older(&(a->st), a->entry)) {
@@ -1236,7 +1267,7 @@ index e62da66..3ff096e 100644
  				archive_entry_unset_size(a->entry);
  				return (ARCHIVE_OK);
  			}
-@@ -2225,8 +2662,14 @@ restore_entry(struct archive_write_disk *a)
+@@ -2225,8 +2666,14 @@ restore_entry(struct archive_write_disk *a)
  				(void)clear_nochange_fflags(a);
  
  			if ((a->flags & ARCHIVE_EXTRACT_SAFE_WRITES) &&
@@ -1253,7 +1284,7 @@ index e62da66..3ff096e 100644
  				if ((a->fd = la_mktemp(a)) == -1) {
  					archive_set_error(&a->archive, errno,
  					    "Can't create temporary file");
-@@ -2246,7 +2689,7 @@ restore_entry(struct archive_write_disk *a)
+@@ -2246,7 +2693,7 @@ restore_entry(struct archive_write_disk *a)
  				/* Try again. */
  				en = create_filesystem_object(a);
  			}
@@ -1262,7 +1293,7 @@ index e62da66..3ff096e 100644
  			/* A dir is in the way of a non-dir, rmdir it. */
  			if (a->flags & ARCHIVE_EXTRACT_CLEAR_NOCHANGE_FFLAGS)
  				(void)clear_nochange_fflags(a);
-@@ -2352,8 +2795,11 @@ create_filesystem_object(struct archive_write_disk *a)
+@@ -2352,8 +2799,11 @@ create_filesystem_object(struct archive_write_disk *a)
  		 * but doing it right, would require us to construct
  		 * an mktemplink() function, and then use rename(2).
  		 */
@@ -1276,7 +1307,7 @@ index e62da66..3ff096e 100644
  #ifdef HAVE_LINKAT
  		r = linkat(AT_FDCWD, linkname, AT_FDCWD, a->name,
  		    0) ? errno : 0;
-@@ -2402,8 +2848,11 @@ create_filesystem_object(struct archive_write_disk *a)
+@@ -2402,8 +2852,11 @@ create_filesystem_object(struct archive_write_disk *a)
  		 * but doing it right, would require us to construct
  		 * an mktempsymlink() function, and then use rename(2).
  		 */
@@ -1290,7 +1321,7 @@ index e62da66..3ff096e 100644
  		return symlink(linkname, a->name) ? errno : 0;
  #else
  		return (EPERM);
-@@ -3528,7 +3977,7 @@ set_ownership(struct archive_write_disk *a)
+@@ -3528,7 +3981,7 @@ set_ownership(struct archive_write_disk *a)
  		return (ARCHIVE_OK);
  	}
  #elif HAVE_CHOWN
@@ -1299,7 +1330,7 @@ index e62da66..3ff096e 100644
  		/* We've set owner and know uid/gid are correct. */
  		a->todo &= ~(TODO_OWNER | TODO_SGID_CHECK | TODO_SUID_CHECK);
  		return (ARCHIVE_OK);
-@@ -3566,6 +4015,26 @@ set_time(int fd, int mode, const char *name,
+@@ -3566,6 +4019,26 @@ set_time(int fd, int mode, const char *name,
  		return futimens(fd, ts);
  	return utimensat(AT_FDCWD, name, ts, AT_SYMLINK_NOFOLLOW);
  
@@ -1326,7 +1357,7 @@ index e62da66..3ff096e 100644
  #elif HAVE_UTIMES
  	/*
  	 * The utimes()-family functions support µs-resolution and
-@@ -3743,7 +4212,12 @@ set_times_from_entry(struct archive_write_disk *a)
+@@ -3743,7 +4216,12 @@ set_times_from_entry(struct archive_write_disk *a)
  		ctime_nsec = archive_entry_ctime_nsec(a->entry);
  	}
  
@@ -1340,7 +1371,7 @@ index e62da66..3ff096e 100644
  			 atime, atime_nsec,
  			 birthtime, birthtime_nsec,
  			 mtime, mtime_nsec,
-@@ -3810,7 +4284,7 @@ set_mode(struct archive_write_disk *a, int mode)
+@@ -3810,7 +4288,7 @@ set_mode(struct archive_write_disk *a, int mode)
  		a->todo &= ~TODO_SUID_CHECK;
  	}
  
@@ -1349,7 +1380,7 @@ index e62da66..3ff096e 100644
  #ifdef HAVE_LCHMOD
  		/*
  		 * If this is a symlink, use lchmod().  If the
-@@ -3841,7 +4315,7 @@ set_mode(struct archive_write_disk *a, int mode)
+@@ -3841,7 +4319,7 @@ set_mode(struct archive_write_disk *a, int mode)
  			}
  		}
  #endif
@@ -1358,7 +1389,7 @@ index e62da66..3ff096e 100644
  		/*
  		 * If it's not a symlink and not a dir, then use
  		 * fchmod() or chmod(), depending on whether we have
-@@ -4540,6 +5014,11 @@ set_xattrs(struct archive_write_disk *a)
+@@ -4540,6 +5018,11 @@ set_xattrs(struct archive_write_disk *a)
  
  		if (name == NULL)
  			continue;
@@ -1370,7 +1401,7 @@ index e62da66..3ff096e 100644
  #if ARCHIVE_XATTR_LINUX
  		/* Linux: quietly skip POSIX.1e ACL extended attributes */
  		if (strncmp(name, "system.", 7) == 0 &&
-@@ -4629,6 +5108,11 @@ set_xattrs(struct archive_write_disk *a)
+@@ -4629,6 +5112,11 @@ set_xattrs(struct archive_write_disk *a)
  			int e;
  			int namespace;
  
@@ -1382,7 +1413,7 @@ index e62da66..3ff096e 100644
  			namespace = EXTATTR_NAMESPACE_USER;
  
  			if (strncmp(name, "user.", 5) == 0) {
-@@ -4714,15 +5198,29 @@ set_xattrs(struct archive_write_disk *a)
+@@ -4714,15 +5202,29 @@ set_xattrs(struct archive_write_disk *a)
  static int
  set_xattrs(struct archive_write_disk *a)
  {
