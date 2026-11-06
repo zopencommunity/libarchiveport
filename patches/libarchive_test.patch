@@ -186,10 +186,10 @@ index 5688982..81befa8 100644
  	assertEqualInt(ARCHIVE_OK, archive_read_free(a));
 diff --git a/libarchive/test/test_read_filter_gzip_trailer.c b/libarchive/test/test_read_filter_gzip_trailer.c
 new file mode 100644
-index 0000000..e9bc8a1
+index 0000000..d02cd71
 --- /dev/null
 +++ b/libarchive/test/test_read_filter_gzip_trailer.c
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,181 @@
 +/*-
 + * Copyright (c) 2026 Corey Daley
 + * All rights reserved.
@@ -224,10 +224,10 @@ index 0000000..e9bc8a1
 +
 +#define DATA_SIZE (256 * 1024)
 +
-+/* A gzip stream of DATA_SIZE bytes in stored blocks (compression level
-+ * 0), so a changed payload byte still inflates. */
++/* A gzip stream of `len` bytes of `data` in stored blocks
++ * (compression level 0), so a changed payload byte still inflates. */
 +static size_t
-+make_gzip(char *buff, size_t buff_size, const char *data)
++make_gzip_n(char *buff, size_t buff_size, const char *data, size_t len)
 +{
 +	struct archive *a;
 +	struct archive_entry *ae;
@@ -242,13 +242,22 @@ index 0000000..e9bc8a1
 +	    archive_write_open_memory(a, buff, buff_size, &used));
 +	assert((ae = archive_entry_new()) != NULL);
 +	archive_entry_set_filetype(ae, AE_IFREG);
-+	archive_entry_set_size(ae, DATA_SIZE);
++	archive_entry_set_size(ae, len);
 +	assertEqualIntA(a, ARCHIVE_OK, archive_write_header(a, ae));
 +	archive_entry_free(ae);
-+	assertEqualInt(DATA_SIZE, archive_write_data(a, data, DATA_SIZE));
++	if (len > 0)
++		assertEqualInt(len, archive_write_data(a, data, len));
 +	assertEqualIntA(a, ARCHIVE_OK, archive_write_close(a));
 +	assertEqualInt(ARCHIVE_OK, archive_write_free(a));
 +	return (used);
++}
++
++/* A gzip stream of DATA_SIZE bytes in stored blocks (compression level
++ * 0), so a changed payload byte still inflates. */
++static size_t
++make_gzip(char *buff, size_t buff_size, const char *data)
++{
++	return (make_gzip_n(buff, buff_size, data, DATA_SIZE));
 +}
 +
 +/* Read all of `buff`; returns the last archive_read_data() result and
@@ -320,6 +329,22 @@ index 0000000..e9bc8a1
 +	assertEqualInt(ARCHIVE_FATAL,
 +	    read_all(twice, used + 16 + used, &total, errbuf));
 +	assertEqualString("Gzip: CRC32 error", errbuf);
++
++	/* An empty member followed by padding and a nonempty member
++	 * must not be mistaken for EOF: the reader keeps going and
++	 * delivers the second member's data. */
++	{
++		char empty[64];
++		size_t empty_used;
++
++		empty_used = make_gzip_n(empty, sizeof(empty), NULL, 0);
++		memcpy(twice, empty, empty_used);
++		memset(twice + empty_used, 0, 16);
++		memcpy(twice + empty_used + 16, buff, used);
++		assertEqualInt(ARCHIVE_OK,
++		    read_all(twice, empty_used + 16 + used, &total, errbuf));
++		assertEqualInt(DATA_SIZE, total);
++	}
 +
 +	/* A changed byte in the middle of the data inflates without complaint;
 +	 * only the CRC catches it. */
@@ -448,6 +473,140 @@ index 1e503cd..c886493 100644
  #endif
  	failure("%s", msg);
  	assertEqualInt(st.st_size, sizeof(data));
+diff --git a/libarchive/test/test_write_disk_hardlink.c b/libarchive/test/test_write_disk_hardlink.c
+index 215633a..1bbb974 100644
+--- a/libarchive/test/test_write_disk_hardlink.c
++++ b/libarchive/test/test_write_disk_hardlink.c
+@@ -257,5 +257,129 @@ DEFINE_TEST(test_write_disk_hardlink)
+ 		assertIsHardlink("link5a", "link5b");
+ 	}
+ #endif
++
++	/*
++	 * With ARCHIVE_EXTRACT_SAFE_WRITES, extracting a regular file
++	 * and a data-less hardlink over existing destinations must
++	 * create a hardlink, not rename an empty temporary file over
++	 * the hardlink destination.
++	 */
++	assert((ad = archive_write_disk_new()) != NULL);
++	assertEqualInt(ARCHIVE_OK, archive_write_disk_set_options(ad,
++	    ARCHIVE_EXTRACT_SAFE_WRITES));
++	/* Regular file, replacing the existing link1a. */
++	assert((ae = archive_entry_new()) != NULL);
++	archive_entry_copy_pathname(ae, "link1a");
++	archive_entry_set_mode(ae, S_IFREG | 0755);
++	archive_entry_set_size(ae, sizeof(data));
++	assertEqualIntA(ad, ARCHIVE_OK, archive_write_header(ad, ae));
++	assertEqualInt(sizeof(data),
++	    archive_write_data(ad, data, sizeof(data)));
++	assertEqualIntA(ad, ARCHIVE_OK, archive_write_finish_entry(ad));
++	archive_entry_free(ae);
++	/* Data-less hardlink over the existing link1b. */
++	assert((ae = archive_entry_new()) != NULL);
++	archive_entry_copy_pathname(ae, "link1b");
++	archive_entry_set_mode(ae, S_IFREG | 0642);
++	archive_entry_unset_size(ae);
++	archive_entry_copy_hardlink(ae, "link1a");
++	assertEqualIntA(ad, ARCHIVE_OK, r = archive_write_header(ad, ae));
++	if (r >= ARCHIVE_WARN)
++		assertEqualIntA(ad, ARCHIVE_OK,
++		    archive_write_finish_entry(ad));
++	archive_entry_free(ae);
++	assertEqualInt(ARCHIVE_OK, archive_write_free(ad));
++	/* The destination must be a hardlink to the new file, with
++	 * the data intact (not an empty file). */
++	assertIsReg("link1a", 0755 & ~UMASK);
++	assertFileSize("link1a", sizeof(data));
++	assertFileNLinks("link1a", 2);
++	assertIsHardlink("link1a", "link1b");
++	assertFileSize("link1b", sizeof(data));
++
++	/*
++	 * With SAFE_WRITES and NO_OVERWRITE, an existing hardlink
++	 * destination is kept and the entry is quietly skipped.
++	 */
++	assert((ad = archive_write_disk_new()) != NULL);
++	assertEqualInt(ARCHIVE_OK, archive_write_disk_set_options(ad,
++	    ARCHIVE_EXTRACT_SAFE_WRITES | ARCHIVE_EXTRACT_NO_OVERWRITE));
++	assert((ae = archive_entry_new()) != NULL);
++	archive_entry_copy_pathname(ae, "link1b");
++	archive_entry_set_mode(ae, S_IFREG | 0642);
++	archive_entry_unset_size(ae);
++	archive_entry_copy_hardlink(ae, "link1a");
++	assertEqualIntA(ad, ARCHIVE_OK, archive_write_header(ad, ae));
++	archive_entry_free(ae);
++	assertEqualInt(ARCHIVE_OK, archive_write_free(ad));
++	/* Unchanged: still a hardlink with the data. */
++	assertIsHardlink("link1a", "link1b");
++	assertFileSize("link1b", sizeof(data));
++
++#ifdef HAVE_SYMLINK
++	/* The same protection applies to symlink destinations. */
++	if (canSymlink()) {
++		assertMakeSymlink("syml", "link1a", 0);
++		assert((ad = archive_write_disk_new()) != NULL);
++		assertEqualInt(ARCHIVE_OK, archive_write_disk_set_options(ad,
++		    ARCHIVE_EXTRACT_SAFE_WRITES |
++		    ARCHIVE_EXTRACT_NO_OVERWRITE));
++		assert((ae = archive_entry_new()) != NULL);
++		archive_entry_copy_pathname(ae, "syml");
++		archive_entry_set_mode(ae, AE_IFLNK | 0755);
++		archive_entry_copy_symlink(ae, "link1b");
++		assertEqualIntA(ad, ARCHIVE_OK,
++		    archive_write_header(ad, ae));
++		archive_entry_free(ae);
++		assertEqualInt(ARCHIVE_OK, archive_write_free(ad));
++		assertIsSymlink("syml", "link1a", 0);
++	}
++#endif
++
++	/*
++	 * A link destination that matches the skip file is refused
++	 * under SAFE_WRITES, and quietly skipped when NO_OVERWRITE
++	 * is also set.
++	 */
++	{
++		struct stat ss;
++		assertMakeFile("sentinel", 0644, "sentinel-data");
++		assertEqualInt(0, stat("sentinel", &ss));
++
++		assert((ad = archive_write_disk_new()) != NULL);
++		assertEqualInt(ARCHIVE_OK, archive_write_disk_set_options(ad,
++		    ARCHIVE_EXTRACT_SAFE_WRITES));
++		assertEqualInt(ARCHIVE_OK, archive_write_disk_set_skip_file(ad,
++		    (int64_t)ss.st_dev, (int64_t)ss.st_ino));
++		assert((ae = archive_entry_new()) != NULL);
++		archive_entry_copy_pathname(ae, "sentinel");
++		archive_entry_set_mode(ae, S_IFREG | 0642);
++		archive_entry_unset_size(ae);
++		archive_entry_copy_hardlink(ae, "link1a");
++		assert(ARCHIVE_FAILED == archive_write_header(ad, ae));
++		archive_entry_free(ae);
++		assertEqualInt(ARCHIVE_OK, archive_write_free(ad));
++		/* Refused: still a regular file with its own data. */
++		assertFileSize("sentinel", 13);
++		assertFileContents("sentinel-data", 13, "sentinel");
++
++		/* With NO_OVERWRITE the skip is quiet. */
++		assert((ad = archive_write_disk_new()) != NULL);
++		assertEqualInt(ARCHIVE_OK, archive_write_disk_set_options(ad,
++		    ARCHIVE_EXTRACT_SAFE_WRITES |
++		    ARCHIVE_EXTRACT_NO_OVERWRITE));
++		assertEqualInt(ARCHIVE_OK, archive_write_disk_set_skip_file(ad,
++		    (int64_t)ss.st_dev, (int64_t)ss.st_ino));
++		assert((ae = archive_entry_new()) != NULL);
++		archive_entry_copy_pathname(ae, "sentinel");
++		archive_entry_set_mode(ae, S_IFREG | 0642);
++		archive_entry_unset_size(ae);
++		archive_entry_copy_hardlink(ae, "link1a");
++		assertEqualIntA(ad, ARCHIVE_OK, archive_write_header(ad, ae));
++		archive_entry_free(ae);
++		assertEqualInt(ARCHIVE_OK, archive_write_free(ad));
++		assertFileSize("sentinel", 13);
++		assertFileContents("sentinel-data", 13, "sentinel");
++	}
+ #endif
+ }
 diff --git a/libarchive/test/test_write_disk_lookup.c b/libarchive/test/test_write_disk_lookup.c
 index 52b9a74..1a97758 100644
 --- a/libarchive/test/test_write_disk_lookup.c
