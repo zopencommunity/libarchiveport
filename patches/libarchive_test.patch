@@ -477,11 +477,12 @@ diff --git a/libarchive/test/test_write_disk_hardlink.c b/libarchive/test/test_w
 index 215633a..1bbb974 100644
 --- a/libarchive/test/test_write_disk_hardlink.c
 +++ b/libarchive/test/test_write_disk_hardlink.c
-@@ -257,5 +257,129 @@ DEFINE_TEST(test_write_disk_hardlink)
+@@ -257,5 +257,131 @@ DEFINE_TEST(test_write_disk_hardlink)
  		assertIsHardlink("link5a", "link5b");
  	}
  #endif
 +
++#if !defined(_WIN32) || defined(__CYGWIN__)
 +	/*
 +	 * With ARCHIVE_EXTRACT_SAFE_WRITES, extracting a regular file
 +	 * and a data-less hardlink over existing destinations must
@@ -605,6 +606,7 @@ index 215633a..1bbb974 100644
 +		assertFileSize("sentinel", 13);
 +		assertFileContents("sentinel-data", 13, "sentinel");
 +	}
++#endif
  #endif
  }
 diff --git a/libarchive/test/test_write_disk_lookup.c b/libarchive/test/test_write_disk_lookup.c
